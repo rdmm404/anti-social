@@ -17,10 +17,25 @@ uv run mypy
 Keep `yt-dlp` up to date. YouTube changes often, and an old version is the most likely
 reason for playback to break.
 
+## Deploy
+
+```sh
+git clone git@github.com:rdmm404/anti-social.git ~/apps/anti-social
+cd ~/apps/anti-social
+mkdir -p data
+docker compose -f docker-compose.prd.yml up -d --build
+```
+
+This serves `yt.nautilus.voltr.org` through Traefik. The name resolves to a home network
+address, so it's reachable from home and over Tailscale, and there's no login: don't add
+it to a public tunnel. The container keeps its own copy of `yt-dlp` in `data/bin` and
+updates it daily.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ANTI_SOCIAL_HOST` / `ANTI_SOCIAL_PORT` | `127.0.0.1` / `8484` | Listen address. There is no login, so don't expose it. |
 | `ANTI_SOCIAL_DATA` | `data` | SQLite database and thumbnail cache |
+| `ANTI_SOCIAL_YTDLP_SELF_UPDATE` | off | Update yt-dlp daily. Needs its release build. |
 | `ANTI_SOCIAL_DAY_START` | `4` | Local hour when the daily budget resets |
 | `ANTI_SOCIAL_COOLING_OFF_HOURS` | `72` | Wait before a looser limit applies |
 | `ANTI_SOCIAL_DAILY_MINUTES` | `60` | First-run seed only |
@@ -55,6 +70,5 @@ reason for playback to break.
 
 ## Later
 
-- Deploy to `nautilus` behind Traefik, private to the tailnet
 - Block YouTube domains in AdGuard Home, with an exception for this server
 - A curated feed of useful videos, in the spirit of hackertube.org

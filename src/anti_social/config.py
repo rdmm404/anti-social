@@ -25,6 +25,9 @@ class Config:
     ytdlp_bin: str = field(
         default_factory=lambda: os.environ.get("ANTI_SOCIAL_YTDLP", "yt-dlp")
     )
+    ytdlp_self_update: bool = field(
+        default_factory=lambda: bool(os.environ.get("ANTI_SOCIAL_YTDLP_SELF_UPDATE"))
+    )
     # The budget day rolls over at this local hour, so a 1am binge counts
     # against the evening it belongs to.
     day_start_hour: int = field(default_factory=lambda: _int("ANTI_SOCIAL_DAY_START", 4))

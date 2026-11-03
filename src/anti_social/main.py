@@ -1,5 +1,6 @@
 """HTTP surface. The rules live in Ledger; YouTube's quirks live in YouTube."""
 
+import asyncio
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,6 +23,7 @@ from .youtube import FORMAT_ID, VIDEO_ID, ExtractionError, Listing, YouTube
 
 STATIC_DIR = Path(__file__).parent / "static"
 HISTORY_PAGE = 50
+YTDLP_UPDATE_INTERVAL = 24 * 3600
 DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 NO_STORE = {"Cache-Control": "no-store"}
 OUT_OF_TIME = {"error": "out_of_time", "message": "You're out of time for today."}
@@ -51,6 +53,12 @@ class Subscription(BaseModel):
     name: str
 
 
+async def keep_ytdlp_current(youtube: YouTube) -> None:
+    while True:
+        await youtube.update_ytdlp()
+        await asyncio.sleep(YTDLP_UPDATE_INTERVAL)
+
+
 def create_app(
     config: Config | None = None,
     ledger: Ledger | None = None,
@@ -66,7 +74,12 @@ def create_app(
         app.state.playlists = Playlists(config.db_path)
         app.state.youtube = youtube or YouTube(client, config.ytdlp_bin)
         app.state.frames = frames or Frames(client, config.thumb_dir)
+        updater = None
+        if config.ytdlp_self_update:
+            updater = asyncio.create_task(keep_ytdlp_current(app.state.youtube))
         yield
+        if updater:
+            updater.cancel()
         await client.aclose()
 
     app = FastAPI(title="anti-social", lifespan=lifespan, docs_url=None, redoc_url=None)

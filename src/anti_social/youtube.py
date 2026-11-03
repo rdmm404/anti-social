@@ -182,6 +182,16 @@ class YouTube:
         self._streams: dict[str, Stream] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
+    async def update_ytdlp(self) -> None:
+        """Only works on yt-dlp's release build, which is what the Docker image runs."""
+        process = await asyncio.create_subprocess_exec(
+            self._bin,
+            "--update",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await process.wait()
+
     async def _ytdlp(self, *args: str) -> dict[str, Any]:
         process = await asyncio.create_subprocess_exec(
             self._bin,
