@@ -25,8 +25,9 @@ class Config:
     ytdlp_bin: str = field(
         default_factory=lambda: os.environ.get("ANTI_SOCIAL_YTDLP", "yt-dlp")
     )
-    ytdlp_self_update: bool = field(
-        default_factory=lambda: bool(os.environ.get("ANTI_SOCIAL_YTDLP_SELF_UPDATE"))
+    # A command to run daily, so a deployment's yt-dlp doesn't go stale.
+    ytdlp_update_command: str = field(
+        default_factory=lambda: os.environ.get("ANTI_SOCIAL_YTDLP_UPDATE", "")
     )
     # The budget day rolls over at this local hour, so a 1am binge counts
     # against the evening it belongs to.

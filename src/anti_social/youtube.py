@@ -24,6 +24,9 @@ FORMAT_ID = re.compile(r"^[\w-]{1,20}$")
 MAX_H264_HEIGHT = 1080  # YouTube has no H.264 above this; higher tracks are AV1.
 MAX_HEIGHT = 2160
 COMMENT_LIMIT = 20
+# Asking for just this client takes half the time of yt-dlp's default set, and our MP4
+# tracks come from it anyway. If it stops working, stream() falls back to the default.
+FAST_CLIENT = "player_client=visionos"
 SEARCH_RESULTS = 20
 CHANNEL_RESULTS = 30
 PLAYLIST_RESULTS = 500
@@ -182,16 +185,6 @@ class YouTube:
         self._streams: dict[str, Stream] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
-    async def update_ytdlp(self) -> None:
-        """Only works on yt-dlp's release build, which is what the Docker image runs."""
-        process = await asyncio.create_subprocess_exec(
-            self._bin,
-            "--update",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await process.wait()
-
     async def _ytdlp(self, *args: str) -> dict[str, Any]:
         process = await asyncio.create_subprocess_exec(
             self._bin,
@@ -254,8 +247,9 @@ class YouTube:
         info = await self._ytdlp(
             "--skip-download",
             "--write-comments",
+            "--ignore-no-formats-error",
             "--extractor-args",
-            f"youtube:max_comments={COMMENT_LIMIT},all,0,0;comment_sort=top",
+            f"youtube:{FAST_CLIENT};max_comments={COMMENT_LIMIT},all,0,0;comment_sort=top",
             f"https://www.youtube.com/watch?v={video_id}",
         )
         return comments_from_info(info)
@@ -269,8 +263,12 @@ class YouTube:
             cached = self._streams.get(video_id)
             if cached and not refresh and cached.expires_at > time.time():
                 return cached
-            info = await self._ytdlp(f"https://www.youtube.com/watch?v={video_id}")
-            stream = stream_from_info(info)
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            try:
+                info = await self._ytdlp("--extractor-args", f"youtube:{FAST_CLIENT}", url)
+                stream = stream_from_info(info)
+            except ExtractionError:
+                stream = stream_from_info(await self._ytdlp(url))
             if cached:
                 stream.indexes = cached.indexes  # Byte layout survives a URL refresh.
             self._streams[video_id] = stream

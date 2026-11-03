@@ -14,10 +14,11 @@ RUN uv sync --frozen --no-dev --no-editable
 COPY docker-entrypoint.py /app/docker-entrypoint.py
 ENV ANTI_SOCIAL_DATA=/data \
     ANTI_SOCIAL_HOST=0.0.0.0 \
-    ANTI_SOCIAL_YTDLP=/data/bin/yt-dlp \
-    ANTI_SOCIAL_YTDLP_SELF_UPDATE=1 \
-    DENO_DIR=/tmp/deno \
-    XDG_CACHE_HOME=/tmp/cache \
+    ANTI_SOCIAL_YTDLP=/data/ytdlp/bin/yt-dlp \
+    "ANTI_SOCIAL_YTDLP_UPDATE=uv pip install --python /data/ytdlp/bin/python --upgrade yt-dlp[default]" \
+    DENO_DIR=/data/cache/deno \
+    UV_CACHE_DIR=/data/cache/uv \
+    XDG_CACHE_HOME=/data/cache \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8484

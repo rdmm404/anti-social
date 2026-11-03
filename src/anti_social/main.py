@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import shlex
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -53,9 +54,14 @@ class Subscription(BaseModel):
     name: str
 
 
-async def keep_ytdlp_current(youtube: YouTube) -> None:
+async def keep_ytdlp_current(command: str) -> None:
     while True:
-        await youtube.update_ytdlp()
+        process = await asyncio.create_subprocess_exec(
+            *shlex.split(command),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await process.wait()
         await asyncio.sleep(YTDLP_UPDATE_INTERVAL)
 
 
@@ -75,8 +81,8 @@ def create_app(
         app.state.youtube = youtube or YouTube(client, config.ytdlp_bin)
         app.state.frames = frames or Frames(client, config.thumb_dir)
         updater = None
-        if config.ytdlp_self_update:
-            updater = asyncio.create_task(keep_ytdlp_current(app.state.youtube))
+        if config.ytdlp_update_command:
+            updater = asyncio.create_task(keep_ytdlp_current(config.ytdlp_update_command))
         yield
         if updater:
             updater.cancel()

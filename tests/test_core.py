@@ -307,6 +307,38 @@ def test_stream_selection_uses_h264_to_1080_then_sdr_av1_to_2160():
     assert stream.audio.format_id == "140"
 
 
+def test_stream_falls_back_to_default_clients():
+    video = {
+        "id": "abcdefghijk",
+        "formats": [
+            fmt("299", height=1080, fps=60, vcodec="avc1.64002a", acodec="none", tbr=3000, width=1920),
+            fmt("140", vcodec="none", acodec="mp4a.40.2", tbr=130),
+        ],
+    }
+
+    class Recording(YouTube):
+        def __init__(self, fast):
+            super().__init__(cast(httpx.AsyncClient, None))
+            self.fast, self.calls = fast, []
+
+        async def _ytdlp(self, *args):
+            self.calls.append(args)
+            return self.fast if len(self.calls) == 1 else video
+
+    async def run(fast):
+        youtube = Recording(fast)
+        stream = await youtube.stream("abcdefghijk")
+        return stream, youtube.calls
+
+    stream, calls = asyncio.run(run(video))
+    assert len(calls) == 1 and "--extractor-args" in calls[0]
+
+    # The fast client answers, but with nothing we can play.
+    stream, calls = asyncio.run(run({"id": "abcdefghijk", "formats": []}))
+    assert len(calls) == 2 and "--extractor-args" not in calls[1]
+    assert stream.videos[0].format_id == "299"
+
+
 def test_listings_drop_shorts_and_live():
     results = listings_from_info(
         {
