@@ -3,7 +3,7 @@
 import asyncio
 import re
 import shlex
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,7 @@ from .youtube import (
     app_route,
     shared_route,
 )
+from .ytdlp import Workers
 
 STATIC_DIR = Path(__file__).parent / "static"
 HISTORY_PAGE = 50
@@ -69,7 +70,11 @@ class Subscription(BaseModel):
     name: str
 
 
-async def keep_ytdlp_current(command: str) -> None:
+async def _nothing() -> None:
+    pass
+
+
+async def keep_ytdlp_current(command: str, on_updated: Callable[[], Awaitable[None]]) -> None:
     while True:
         process = await asyncio.create_subprocess_exec(
             *shlex.split(command),
@@ -77,6 +82,7 @@ async def keep_ytdlp_current(command: str) -> None:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await process.wait()
+        await on_updated()  # Running workers still have the old yt-dlp loaded.
         await asyncio.sleep(YTDLP_UPDATE_INTERVAL)
 
 
@@ -93,14 +99,22 @@ def create_app(
         client = httpx.AsyncClient(follow_redirects=True, limits=httpx.Limits(max_connections=64))
         app.state.ledger = ledger or Ledger(config)
         app.state.playlists = Playlists(config.db_path)
-        app.state.youtube = youtube or YouTube(client, config.ytdlp_bin)
+        workers = None if youtube else Workers.for_binary(config.ytdlp_bin, config.ytdlp_workers)
+        app.state.youtube = youtube or YouTube(client, config.ytdlp_bin, workers)
         app.state.frames = frames or Frames(client, config.thumb_dir)
-        updater = None
+        background = []
+        if workers:
+            background.append(asyncio.create_task(workers.restart()))  # Ready for the first request.
         if config.ytdlp_update_command:
-            updater = asyncio.create_task(keep_ytdlp_current(config.ytdlp_update_command))
+            on_updated = workers.restart if workers else _nothing
+            background.append(
+                asyncio.create_task(keep_ytdlp_current(config.ytdlp_update_command, on_updated))
+            )
         yield
-        if updater:
-            updater.cancel()
+        for task in background:
+            task.cancel()
+        if workers:
+            workers.close()
         await client.aclose()
 
     app = FastAPI(title="anti-social", lifespan=lifespan, docs_url=None, redoc_url=None)

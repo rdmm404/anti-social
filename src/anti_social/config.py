@@ -25,6 +25,8 @@ class Config:
     ytdlp_bin: str = field(
         default_factory=lambda: os.environ.get("ANTI_SOCIAL_YTDLP", "yt-dlp")
     )
+    # Long-lived yt-dlp processes, which is how many requests run at once. 0 starts one per request.
+    ytdlp_workers: int = field(default_factory=lambda: _int("ANTI_SOCIAL_YTDLP_WORKERS", 2))
     # A command to run daily, so a deployment's yt-dlp doesn't go stale.
     ytdlp_update_command: str = field(
         default_factory=lambda: os.environ.get("ANTI_SOCIAL_YTDLP_UPDATE", "")

@@ -26,6 +26,10 @@ strict = true
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
+module = "yt_dlp"  # Lives in yt-dlp's own environment, which only ytdlp_worker.py runs in.
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = "test_core"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false

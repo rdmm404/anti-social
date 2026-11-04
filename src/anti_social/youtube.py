@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, parse_qsl, quote, urlparse
 import httpx
 
 from .media import SegmentIndex, Track, locate_sidx, parse_index
+from .ytdlp import ToolError, WorkerFailed, Workers
 
 VIDEO_ID = re.compile(r"^[\w-]{11}$")
 CHANNEL_ID = re.compile(r"^(UC[\w-]{20,}|@[\w.-]+)$")
@@ -28,6 +29,10 @@ COMMENT_LIMIT = 20
 # Asking for just this client takes half the time of yt-dlp's default set, and our MP4
 # tracks come from it anyway. If it stops working, stream() falls back to the default.
 FAST_CLIENT = "player_client=visionos"
+# We play the direct MP4 files, so the HLS and DASH manifests are wasted downloads.
+# Leaving out the watch page too is not an option: it supplies the visitor data that
+# keeps YouTube from asking for a sign-in.
+FAST_STREAM = f"{FAST_CLIENT};skip=hls,dash"
 SEARCH_RESULTS = 20
 CHANNEL_RESULTS = 30
 PLAYLIST_RESULTS = 500
@@ -124,6 +129,13 @@ def _expiry(url: str) -> float:
         return float(query["expire"][0]) - 600
     except (KeyError, ValueError):
         return time.time() + 5 * 3600
+
+
+def _reason(output: str) -> str:
+    """The line of yt-dlp's output that says what went wrong."""
+    lines = output.strip().splitlines()
+    reason = next((l for l in reversed(lines) if l.startswith("ERROR")), "yt-dlp failed")
+    return reason.removeprefix("ERROR:").strip()[:300]
 
 
 def _codec_tag(value: str) -> str:
@@ -235,13 +247,29 @@ def comments_from_info(info: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 class YouTube:
-    def __init__(self, client: httpx.AsyncClient, ytdlp_bin: str = "yt-dlp"):
+    def __init__(
+        self, client: httpx.AsyncClient, ytdlp_bin: str = "yt-dlp", workers: Workers | None = None
+    ):
         self._client = client
         self._bin = ytdlp_bin
+        self._workers = workers
         self._streams: dict[str, Stream] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def _ytdlp(self, *args: str) -> dict[str, Any]:
+        """Run yt-dlp with these arguments, the URL last. Failures become ExtractionError."""
+        if self._workers:
+            try:
+                return await self._workers.run(list(args))
+            except ToolError as error:
+                raise ExtractionError(_reason(str(error))) from None
+            except TimeoutError:
+                raise ExtractionError("YouTube took too long to respond.") from None
+            except WorkerFailed:
+                pass  # A one-off process is slower but doesn't depend on the worker.
+        return await self._ytdlp_once(*args)
+
+    async def _ytdlp_once(self, *args: str) -> dict[str, Any]:
         process = await asyncio.create_subprocess_exec(
             self._bin,
             "--ignore-config",
@@ -258,9 +286,7 @@ class YouTube:
             await process.wait()
             raise ExtractionError("YouTube took too long to respond.") from None
         if process.returncode != 0:
-            lines = err.decode(errors="replace").strip().splitlines()
-            reason = next((l for l in reversed(lines) if l.startswith("ERROR")), "yt-dlp failed")
-            raise ExtractionError(reason.removeprefix("ERROR:").strip()[:300])
+            raise ExtractionError(_reason(err.decode(errors="replace")))
         info: dict[str, Any] = json.loads(out)
         return info
 
@@ -324,7 +350,7 @@ class YouTube:
                 return cached
             url = f"https://www.youtube.com/watch?v={video_id}"
             try:
-                info = await self._ytdlp("--extractor-args", f"youtube:{FAST_CLIENT}", url)
+                info = await self._ytdlp("--extractor-args", f"youtube:{FAST_STREAM}", url)
                 stream = stream_from_info(info)
             except ExtractionError:
                 stream = stream_from_info(await self._ytdlp(url))

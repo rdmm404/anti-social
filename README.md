@@ -35,6 +35,7 @@ it daily.
 | --- | --- | --- |
 | `ANTI_SOCIAL_HOST` / `ANTI_SOCIAL_PORT` | `127.0.0.1` / `8484` | Listen address. There is no login, so don't expose it. |
 | `ANTI_SOCIAL_DATA` | `data` | SQLite database and thumbnail cache |
+| `ANTI_SOCIAL_YTDLP_WORKERS` | `2` | Long-lived yt-dlp processes, which is how many YouTube requests run at once. `0` starts a process per request. |
 | `ANTI_SOCIAL_YTDLP_UPDATE` | none | Command run daily to update yt-dlp. The Docker image sets this. |
 | `ANTI_SOCIAL_DAY_START` | `4` | Local hour when the daily budget resets |
 | `ANTI_SOCIAL_COOLING_OFF_HOURS` | `72` | Wait before a looser limit applies |
