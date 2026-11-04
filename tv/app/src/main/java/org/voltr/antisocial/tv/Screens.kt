@@ -30,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
@@ -100,14 +101,14 @@ private fun <T> Loaded(loader: Loader<T>, budget: Budget, label: String, content
 }
 
 @Composable
-fun HomeScreen(budget: Budget, open: (Route) -> Unit) {
+fun HomeScreen(budget: Budget, searchTab: FocusRequester, open: (Route) -> Unit) {
     val status = budget.status
     Column(verticalArrangement = Arrangement.spacedBy(Unit5 * 4), modifier = Modifier.fillMaxWidth().padding(top = Unit5 * 4)) {
         if (status != null && !status.canWatch) {
             OutOfTimePanel(budget)
             return@Column
         }
-        SearchBox { query -> open(Route.SearchResults(query)) }
+        SearchBox(searchTab) { query -> open(Route.SearchResults(query)) }
         if (status != null) {
             Panel {
                 Label("${minutesText(status.remainingSeconds)} left today", Type.h1)
@@ -123,7 +124,7 @@ fun HomeScreen(budget: Budget, open: (Route) -> Unit) {
  * button until it's pressed. Back or submitting leaves the field and returns to the button.
  */
 @Composable
-private fun SearchBox(onSearch: (String) -> Unit) {
+private fun SearchBox(tab: FocusRequester, onSearch: (String) -> Unit) {
     var editing by remember { mutableStateOf(false) }
     var text by remember { mutableStateOf("") }
     val button = remember { FocusRequester() }
@@ -160,7 +161,11 @@ private fun SearchBox(onSearch: (String) -> Unit) {
             keyboard?.show()
         }
     } else {
-        Focusable({ editing = true }, Modifier.fillMaxWidth().focusRequester(button), fill = Palette.surface) {
+        Focusable(
+            { editing = true },
+            Modifier.fillMaxWidth().focusProperties { up = tab }.focusRequester(button),
+            fill = Palette.surface,
+        ) {
             Label(
                 text.ifEmpty { "What did you come here for?" },
                 if (text.isEmpty()) Type.muted else Type.body,
@@ -225,8 +230,7 @@ fun ChannelScreen(api: Api, budget: Budget, entry: Entry, id: String, open: (Rou
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Unit5 * 4),
             ) {
-                Label(page.channel.name, Type.h2, Modifier.weight(1f), maxLines = 1)
-                if (problem != null) Label(problem!!, Type.problem, maxLines = 1)
+                // On the left, above the cards: D-pad Up only reaches what overlaps horizontally.
                 ActionButton(if (subscribed) "Unsubscribe" else "Subscribe", {
                     scope.launch {
                         try {
@@ -238,6 +242,8 @@ fun ChannelScreen(api: Api, budget: Budget, entry: Entry, id: String, open: (Rou
                         }
                     }
                 })
+                Label(page.channel.name, Type.h2, Modifier.weight(1f), maxLines = 1)
+                if (problem != null) Label(problem!!, Type.problem, maxLines = 1)
             }
             VideoGrid(api, page.channel.results, entry, open)
         }
