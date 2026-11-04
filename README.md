@@ -70,6 +70,25 @@ Pasting a link into the search box does the same.
   `^https?://(?:www\.|m\.)?youtube\.com/(.*)` and `^https?://youtu\.be/(.*)` to
   `https://yt.nautilus.voltr.org/$1`.
 
+## Fire TV app
+
+`tv/` is a small native app for Android-based Fire TVs. It uses the same API and spends the
+same budget, and all the rules stay on the server. It has search, channels, playlists,
+history, the player and unlocks. Limits are still changed on the web. Fire TVs on Vega OS
+can't sideload it.
+
+```sh
+cd tv
+./gradlew testDebugUnitTest
+./gradlew assembleRelease   # -PantiSocialServer=http://10.0.2.2:8484 for another server
+adb connect <tv-ip>:5555
+adb install -r app/build/outputs/apk/release/app-release.apk
+```
+
+It needs JDK 21 and the Android SDK, with `sdk.dir` in `tv/local.properties`. Releases are
+signed with the machine's debug key, so installing from another machine means uninstalling
+first.
+
 ## Layout
 
 | File | Responsibility |
@@ -80,6 +99,7 @@ Pasting a link into the search box does the same.
 | `playlists.py` | Saved video lists |
 | `branding.py` | Title cleanup and generated-frame thumbnails |
 | `main.py` | HTTP routes |
+| `tv/` | The Fire TV app |
 | `static/` | Frontend, with hls.js, JetBrains Mono and a Lucide icon sprite vendored |
 
 ## Later
