@@ -27,6 +27,7 @@ from .ledger import Ledger, LedgerError
 from .media import master_playlist, media_playlist
 from .playlists import Playlists
 from .youtube import (
+    CHANNEL_RESULTS,
     FORMAT_ID,
     VIDEO_ID,
     ExtractionError,
@@ -234,11 +235,17 @@ def create_app(
         return {"results": present(await app.state.youtube.search(query[:200]))}
 
     @app.get("/api/channel/{channel_id}")
-    async def channel(channel_id: str) -> Any:
+    async def channel(channel_id: str, offset: int = 0) -> Any:
         if blocked := require_time():
             return blocked
-        name, listings = await app.state.youtube.channel(channel_id)
-        return {"id": channel_id, "name": name, "results": present(listings)}
+        offset = max(0, offset)
+        name, listings, has_more = await app.state.youtube.channel(channel_id, offset)
+        return {
+            "id": channel_id,
+            "name": name,
+            "results": present(listings),
+            "next_offset": offset + CHANNEL_RESULTS if has_more else None,
+        }
 
     @app.get("/api/subscriptions")
     async def subscriptions() -> Any:

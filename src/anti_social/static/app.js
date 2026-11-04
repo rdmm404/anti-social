@@ -280,35 +280,43 @@ function channelsPage() {
 function channelPage(id) {
   const body = h('div', { class: 'stack' });
   view.replaceChildren(body);
+  const more = h('div', { class: 'stack' });
+
+  const loadPage = async (list, offset) => {
+    const data = await api(`/api/channel/${encodeURIComponent(id)}?offset=${offset}`);
+    list.append(...data.results.map((video) => resultRow(video)));
+    more.replaceChildren();
+    if (data.next_offset !== null) {
+      more.append(h('div', {}, h('button', {
+        onclick: () => withLoading(more, 'Loading…', () => loadPage(list, data.next_offset)),
+      }, 'Load more')));
+    }
+    return data;
+  };
+
   withLoading(body, 'Loading channel…', async () => {
-    const data = await api(`/api/channel/${encodeURIComponent(id)}`);
+    const list = h('div', { class: 'results' });
+    const data = await loadPage(list, 0);
     const { subscriptions } = await api('/api/subscriptions');
     body.replaceChildren(
       h('div', { class: 'row spread' }, h('h1', {}, data.name),
         subscribeButton(id, data.name, subscriptions.some((c) => c.channel_id === id))),
-      resultList(data.results),
+      list.childElementCount || data.next_offset !== null ? list : h('p', { class: 'muted' }, 'Nothing found.'),
+      more,
     );
   });
 }
 
 function subscribeButton(id, name, initial) {
   let subscribed = initial;
-  const button = iconButton('user-plus', 'Subscribe', {
+  const button = h('button', {
     onclick: async () => {
       if (subscribed) await api(`/api/subscriptions/${encodeURIComponent(id)}`, { method: 'DELETE' });
       else await api('/api/subscriptions', { method: 'POST', body: { channel_id: id, name } });
       subscribed = !subscribed;
-      draw();
+      button.textContent = subscribed ? 'Unsubscribe' : 'Subscribe';
     },
-  });
-  const draw = () => {
-    const label = subscribed ? 'Unsubscribe' : 'Subscribe';
-    button.title = label;
-    button.setAttribute('aria-label', label);
-    button.setAttribute('aria-pressed', String(subscribed));
-    button.replaceChildren(icon(subscribed ? 'user-check' : 'user-plus'));
-  };
-  draw();
+  }, subscribed ? 'Unsubscribe' : 'Subscribe');
   return button;
 }
 
@@ -654,27 +662,81 @@ function commentsSection(player) {
 
 function addToPlaylist(video) {
   const note = h('span', { class: 'muted', role: 'status' });
-  const select = h('select', { 'aria-label': 'Add to playlist' }, h('option', { value: '' }, 'add to playlist…'));
-  api('/api/playlists').then(({ playlists }) => {
-    select.append(...playlists.map((p) => h('option', { value: String(p.id) }, p.name)));
-    if (!playlists.length) select.disabled = true;
-  }, () => { select.disabled = true; });
-  select.addEventListener('change', async () => {
-    const id = select.value;
-    if (!id) return;
-    const name = select.selectedOptions[0].textContent;
-    select.value = '';
+  const items = h('div', { class: 'menu-items' });
+  const name = h('input', { placeholder: 'New playlist', 'aria-label': 'New playlist name', autocomplete: 'off' });
+  let busy = false;
+
+  const add = async (id, label) => {
+    await api(`/api/playlists/${id}/items`, {
+      method: 'POST',
+      body: { id: video.id, title: video.title, channel: video.channel, duration: video.duration },
+    });
+    note.textContent = `Added to ${label}`;
+  };
+
+  const attempt = async (action) => {
+    if (busy) return;
+    busy = true;
     try {
-      await api(`/api/playlists/${id}/items`, {
-        method: 'POST',
-        body: { id: video.id, title: video.title, channel: video.channel, duration: video.duration },
-      });
-      note.textContent = `Added to ${name}`;
+      await action();
+      close();
     } catch (error) {
       note.textContent = error.message;
+    } finally {
+      busy = false;
     }
+  };
+
+  const menu = h('div', { class: 'menu', hidden: true },
+    items,
+    h('form', {
+      class: 'search',
+      onsubmit: (event) => {
+        event.preventDefault();
+        attempt(async () => {
+          const { id } = await api('/api/playlists', { method: 'POST', body: { name: name.value } });
+          await add(id, name.value.trim());
+          name.value = '';
+        });
+      },
+    }, name, iconButton('plus', 'Create playlist and add this video', { class: 'primary', type: 'submit' })));
+
+  const toggle = iconButton('list-plus', 'Add to playlist', {
+    'aria-expanded': 'false',
+    onclick: () => (menu.hidden ? open() : close()),
   });
-  return [h('label', { class: 'icon-button picker', title: 'Add to playlist' }, icon('list-plus'), select), note];
+  const picker = h('div', {}, toggle, menu);
+
+  const onOutside = (event) => {
+    if (!picker.contains(event.target)) close();
+  };
+  const onKey = (event) => {
+    if (event.key === 'Escape') close();
+  };
+
+  function close() {
+    menu.hidden = true;
+    toggle.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', onOutside);
+    document.removeEventListener('keydown', onKey);
+  }
+
+  function open() {
+    menu.hidden = false;
+    note.textContent = '';
+    toggle.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', onOutside);
+    document.addEventListener('keydown', onKey);
+    api('/api/playlists').then(({ playlists }) => {
+      items.replaceChildren(...playlists.map((p) => h('button', {
+        type: 'button',
+        class: 'menu-item',
+        onclick: () => attempt(() => add(p.id, p.name)),
+      }, p.name)));
+    }, (error) => { note.textContent = error.message; });
+  }
+
+  return [picker, note];
 }
 
 // A link, never a timer: moving on stays a decision.

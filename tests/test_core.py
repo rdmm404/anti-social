@@ -521,6 +521,43 @@ def test_comments_close_with_the_budget(client):
     assert client.get("/api/video/abcdefghijk/comments").status_code == 402
 
 
+# ---- channels ----
+
+
+def channel_page(count):
+    return {"channel": "Chan", "entries": [{"id": f"video{i:06}", "title": "t"} for i in range(count)]}
+
+
+def test_channel_asks_for_the_right_page_and_sees_the_end():
+    calls = []
+
+    class FakeYtdlp(YouTube):
+        async def _ytdlp(self, *args):
+            calls.append(args)
+            return channel_page(30 if len(calls) == 1 else 4)
+
+    youtube = FakeYtdlp(cast(httpx.AsyncClient, None))
+    name, listings, has_more = asyncio.run(youtube.channel("@someone"))
+    assert (name, len(listings), has_more) == ("Chan", 30, True)
+    assert "1:30" in calls[0]
+    _, listings, has_more = asyncio.run(youtube.channel("@someone", 30))
+    assert (len(listings), has_more) == (4, False)
+    assert "31:60" in calls[1]
+
+
+def test_channel_route_gives_the_next_offset(client):
+    calls = []
+
+    async def channel(channel_id, offset):
+        calls.append(offset)
+        return "Chan", [], offset == 0
+
+    client.fake.channel = channel
+    assert client.get("/api/channel/@someone").json()["next_offset"] == 30
+    assert client.get("/api/channel/@someone?offset=30").json()["next_offset"] is None
+    assert calls == [0, 30]
+
+
 # ---- opening YouTube links ----
 
 

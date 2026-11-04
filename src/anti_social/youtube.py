@@ -270,18 +270,21 @@ class YouTube:
         info = await self._ytdlp("--flat-playlist", f"ytsearch{SEARCH_RESULTS}:{query}")
         return listings_from_info(info)
 
-    async def channel(self, channel_id: str) -> tuple[str, list[Listing]]:
+    async def channel(self, channel_id: str, offset: int = 0) -> tuple[str, list[Listing], bool]:
+        """One page of a channel's videos, newest first, and whether there may be more."""
         if not CHANNEL_ID.match(channel_id):
             raise ExtractionError("Not a channel id.")
         path = channel_id if channel_id.startswith("@") else f"channel/{channel_id}"
         info = await self._ytdlp(
             "--flat-playlist",
-            "--playlist-end",
-            str(CHANNEL_RESULTS),
+            "--playlist-items",
+            f"{offset + 1}:{offset + CHANNEL_RESULTS}",
             f"https://www.youtube.com/{path}/videos",
         )
         name = info.get("channel") or info.get("uploader") or channel_id
-        return name, listings_from_info(info)
+        # Counted before filtering: a page of only hidden videos doesn't mean the end.
+        has_more = len(info.get("entries") or []) == CHANNEL_RESULTS
+        return name, listings_from_info(info), has_more
 
     async def playlist(self, url: str) -> tuple[str, list[Listing]]:
         """Accepts a playlist URL or bare id. Only public and unlisted lists are readable."""
