@@ -5,6 +5,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -116,9 +121,9 @@ private fun App(api: Api) {
     BackHandler(enabled = stack.size > 1) { stack.removeAt(stack.lastIndex) }
 
     Box(Modifier.fillMaxSize().background(Palette.background)) {
-        androidx.compose.runtime.key(entry) {
-            val route = entry.route
-            if (route is Route.Watch) {
+        val route = entry.route
+        if (route is Route.Watch) {
+            androidx.compose.runtime.key(entry) {
                 PlayerScreen(
                     api = api,
                     budget = budget,
@@ -130,10 +135,13 @@ private fun App(api: Api) {
                         open(next)
                     },
                 )
-            } else {
-                Column(Modifier.fillMaxSize()) {
-                    TopBar(route, budget, openSection)
-                    Box(Modifier.fillMaxSize().padding(horizontal = Unit5 * 8)) {
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                // Outside key(entry): recreating the bar would drop focus from the tab just pressed.
+                TopBar(route, budget, openSection)
+                Box(Modifier.fillMaxSize().padding(horizontal = Unit5 * 8)) {
+                    androidx.compose.runtime.key(entry) {
                         when (route) {
                             Route.Search -> HomeScreen(budget, open)
                             is Route.SearchResults -> SearchResultsScreen(api, budget, entry, route.query, open)
@@ -151,6 +159,7 @@ private fun App(api: Api) {
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun TopBar(current: Route, budget: Budget, openSection: (Route) -> Unit) {
     val active = when (current) {
@@ -160,8 +169,14 @@ private fun TopBar(current: Route, budget: Budget, openSection: (Route) -> Unit)
         Route.History -> Route.History
         is Route.Watch -> null
     }
+    val tabFocus = remember { mutableMapOf<Route, FocusRequester>() }
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = Unit5 * 8, vertical = Unit5 * 3),
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Unit5 * 8, vertical = Unit5 * 3)
+            // Whatever is below, Up lands on the current section rather than the nearest tab.
+            .focusProperties { enter = { tabFocus[active]?.takeIf { active != null } ?: FocusRequester.Default } }
+            .focusGroup(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Unit5),
     ) {
@@ -173,7 +188,7 @@ private fun TopBar(current: Route, budget: Budget, openSection: (Route) -> Unit)
             Route.Playlists to "playlists",
             Route.History to "history",
         ).forEach { (route, name) ->
-            Focusable({ openSection(route) }) {
+            Focusable({ openSection(route) }, Modifier.focusRequester(tabFocus.getOrPut(route) { FocusRequester() })) {
                 Label(
                     name,
                     if (route == active) Type.strong.copy(color = Palette.accent) else Type.muted,
