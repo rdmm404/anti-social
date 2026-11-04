@@ -31,6 +31,7 @@
   --h3: 15px;
   --u: 5px;
   --r: 1px;
+  --topbar: 55px;
 }
 
 * {
@@ -118,19 +119,31 @@ p {
 .clock.out {
   color: var(--problem);
 }
-.clock.unlocked {
-  color: var(--activity);
+.topbar nav .icon {
+  display: none;
 }
-/* Five links and the clock don't fit one phone-width row. */
+/* Five words and the clock don't fit one phone-width row, but five icons do. */
 @media (max-width: 620px) {
   .topbar {
-    flex-wrap: wrap;
-    row-gap: var(--u);
+    gap: calc(var(--u) * 2);
+  }
+  .brand,
+  .topbar nav span {
+    display: none;
   }
   .topbar nav {
-    order: 3;
-    width: 100%;
-    justify-content: space-between;
+    gap: var(--u);
+  }
+  .topbar nav a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+  }
+  .topbar nav .icon {
+    display: block;
   }
 }
 
@@ -192,6 +205,64 @@ button:disabled {
   cursor: default;
   color: var(--muted);
 }
+.icon {
+  display: block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.icon-button {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--fg);
+  cursor: pointer;
+}
+.icon-button:hover {
+  border-color: var(--accent);
+}
+.icon-button[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* A native select laid over an icon: the phone's own picker, without the width. */
+.picker select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.picker:focus-within {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+.picker:has(select:disabled) {
+  color: var(--muted);
+  cursor: default;
+}
+/* Fingers need a bigger target than a pointer does. */
+@media (pointer: coarse) {
+  .icon-button {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+}
 input,
 select {
   min-height: 34px;
@@ -217,6 +288,10 @@ select {
 }
 .search button {
   min-height: 40px;
+}
+.search .icon-button {
+  width: 40px;
+  height: 40px;
 }
 
 /* meter */
@@ -308,19 +383,24 @@ video {
 }
 #stage.theater video {
   aspect-ratio: auto;
-  height: min(56.25vw, calc(100dvh - 52px));
+  height: min(56.25vw, calc(100dvh - var(--topbar)));
 }
-/* A phone's video is already full width. */
-@media (max-width: 720px) {
+/* Phones and tablets always get the video edge to edge, even held sideways. */
+@media (max-width: 720px), (pointer: coarse) {
+  #stage {
+    max-width: none;
+    padding: 0;
+  }
+  video {
+    aspect-ratio: auto;
+    height: min(56.25vw, calc(100dvh - var(--topbar)));
+  }
   .theater-toggle {
     display: none;
   }
 }
-.player-tools label {
-  display: inline-flex;
-  align-items: center;
+.player-tools {
   gap: var(--u);
-  color: var(--muted);
 }
 
 .prose {

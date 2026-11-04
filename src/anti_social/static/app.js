@@ -30,6 +30,21 @@ function fill(el, ...children) {
   el.replaceChildren(...children.filter(Boolean));
 }
 
+function icon(name) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('class', 'icon');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(ns, 'use');
+  use.setAttribute('href', `/vendor/lucide.svg#${name}`);
+  svg.append(use);
+  return svg;
+}
+
+function iconButton(name, label, attrs = {}) {
+  return h('button', { type: 'button', ...attrs, class: `icon-button ${attrs.class ?? ''}`, title: label, 'aria-label': label }, icon(name));
+}
+
 class ApiError extends Error {
   constructor(code, data) {
     super(data?.message ?? `Request failed (${code})`);
@@ -77,10 +92,6 @@ function unlockWaiting(s) {
   return s.unlock_starts_at && s.unlock_starts_at > s.now;
 }
 
-function unlockRunning(s) {
-  return s.unlock_starts_at && s.unlock_starts_at <= s.now && s.unlock_ends_at > s.now;
-}
-
 // ---- status ----
 
 async function refreshStatus() {
@@ -96,10 +107,7 @@ async function refreshStatus() {
 function renderClock() {
   const s = status;
   clock.className = 'clock';
-  if (unlockRunning(s)) {
-    clock.classList.add('unlocked');
-    clock.textContent = `unlocked ${minutesText(s.unlock_ends_at - s.now)}`;
-  } else if (unlockWaiting(s)) {
+  if (unlockWaiting(s)) {
     clock.textContent = `unlock in ${Math.ceil(s.unlock_starts_at - s.now)}s`;
   } else if (!s.can_watch) {
     clock.classList.add('out');
@@ -116,9 +124,7 @@ function unlockControl() {
     box.replaceChildren();
     const s = status;
     if (unlockWaiting(s)) {
-      box.append(h('p', {}, `Unlock starts in ${Math.ceil(s.unlock_starts_at - s.now)}s.`));
-    } else if (unlockRunning(s)) {
-      box.append(h('p', {}, `Unlocked until ${timeOfDay(s.unlock_ends_at)}. This time doesn't use your daily budget.`));
+      box.append(h('p', {}, `Adding ${s.unlock_minutes} min in ${Math.ceil(s.unlock_starts_at - s.now)}s.`));
     } else if (!s.budget_spent) {
       // Unlocks only open once the budget is gone, so there's nothing to offer yet.
     } else if (s.unlocks_left > 0) {
@@ -135,7 +141,7 @@ function unlockControl() {
               }
             },
           }, `Use an unlock (${s.unlocks_left} left)`),
-          h('span', { class: 'muted' }, `${s.unlock_minutes} min, after a ${s.unlock_wait_seconds}s wait`),
+          h('span', { class: 'muted' }, `+${s.unlock_minutes} min, after a ${s.unlock_wait_seconds}s wait`),
         ),
         error,
       );
@@ -209,12 +215,12 @@ function searchPage(query) {
     onsubmit: (event) => {
       event.preventDefault();
       const q = input.value.trim();
-      if (q) location.hash = `#/search/${encodeURIComponent(q)}`;
+      if (/^https?:\/\//i.test(q)) location.href = `/share?url=${encodeURIComponent(q)}`;
+      else if (q) location.hash = `#/search/${encodeURIComponent(q)}`;
     },
-  }, input, h('button', { class: 'primary', type: 'submit' }, 'Search'));
+  }, input, iconButton('search', 'Search', { class: 'primary', type: 'submit' }));
 
   const summary = h('div', { class: 'stack' });
-  let unlock = null;
   let locked = null;
   const drawSummary = (s) => {
     if (!s.can_watch) {
@@ -234,15 +240,12 @@ function searchPage(query) {
       return;
     }
     const used = s.budget_seconds ? Math.min(1, s.used_seconds / s.budget_seconds) : 1;
-    if (!unlock) unlock = unlockControl();
-    else unlock.redraw();
     summary.replaceChildren(
       h('section', { class: 'panel stack' },
         h('h1', {}, `${minutesText(s.remaining_seconds)} left today`),
         h('div', { class: 'meter', role: 'img', 'aria-label': `${Math.round(used * 100)}% used` },
           h('div', { style: `width:${used * 100}%` })),
         h('p', { class: 'muted' }, `Resets at ${timeOfDay(s.resets_at)}.`),
-        unlock,
       ),
     );
   };
@@ -290,14 +293,22 @@ function channelPage(id) {
 
 function subscribeButton(id, name, initial) {
   let subscribed = initial;
-  const button = h('button', {
+  const button = iconButton('user-plus', 'Subscribe', {
     onclick: async () => {
       if (subscribed) await api(`/api/subscriptions/${encodeURIComponent(id)}`, { method: 'DELETE' });
       else await api('/api/subscriptions', { method: 'POST', body: { channel_id: id, name } });
       subscribed = !subscribed;
-      button.textContent = subscribed ? 'Unsubscribe' : 'Subscribe';
+      draw();
     },
-  }, subscribed ? 'Unsubscribe' : 'Subscribe');
+  });
+  const draw = () => {
+    const label = subscribed ? 'Unsubscribe' : 'Subscribe';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.setAttribute('aria-pressed', String(subscribed));
+    button.replaceChildren(icon(subscribed ? 'user-check' : 'user-plus'));
+  };
+  draw();
   return button;
 }
 
@@ -369,16 +380,16 @@ function historyPage() {
       h('label', { class: 'grow' }, 'search', q),
       h('label', {}, 'from', start),
       h('label', {}, 'to', end),
-      h('button', { class: 'primary', type: 'submit' }, 'Filter')),
+      iconButton('funnel', 'Filter', { class: 'primary', type: 'submit' })),
     list,
     status));
   reload();
 }
 
-function playlistsPage() {
+function playlistsPage(importing) {
   const list = h('div', { class: 'stack' });
   const name = h('input', { placeholder: 'New playlist name', 'aria-label': 'Playlist name' });
-  const url = h('input', { placeholder: 'YouTube playlist link', 'aria-label': 'YouTube playlist link' });
+  const url = h('input', { placeholder: 'YouTube playlist link', 'aria-label': 'YouTube playlist link', value: importing ?? '' });
   const error = h('p', { class: 'problem', role: 'status' });
 
   const submit = (action) => async (event) => {
@@ -412,11 +423,11 @@ function playlistsPage() {
     h('form', {
       class: 'search',
       onsubmit: submit(() => api('/api/playlists', { method: 'POST', body: { name: name.value } })),
-    }, name, h('button', { class: 'primary', type: 'submit' }, 'Create')),
+    }, name, iconButton('plus', 'Create playlist', { class: 'primary', type: 'submit' })),
     h('form', {
       class: 'search',
       onsubmit: submit(() => api('/api/playlists/import', { method: 'POST', body: { url: url.value } })),
-    }, url, h('button', { type: 'submit' }, 'Import')),
+    }, url, iconButton('import', 'Import playlist', { type: 'submit' })),
     error,
     list));
   load();
@@ -430,23 +441,22 @@ function playlistPage(id) {
     body.replaceChildren(
       h('div', { class: 'row spread' },
         h('h1', {}, playlist.name),
-        h('button', {
+        iconButton('trash-2', 'Delete playlist', {
           onclick: async () => {
             if (!confirm(`Delete "${playlist.name}"?`)) return;
             await api(`/api/playlists/${id}`, { method: 'DELETE' });
             location.hash = '#/playlists';
           },
-        }, 'Delete playlist')),
+        })),
       playlist.items.length
         ? h('div', { class: 'results' }, playlist.items.map((video) => h('div', { class: 'item-row' },
             resultRow(video, { href: `#/watch/${video.id}?list=${id}` }),
-            h('button', {
-              'aria-label': `Remove ${video.title}`,
+            iconButton('x', `Remove ${video.title}`, {
               onclick: async () => {
                 await api(`/api/playlists/${id}/items/${video.id}`, { method: 'DELETE' });
                 load();
               },
-            }, 'Remove'))))
+            }))))
         : h('p', { class: 'muted' }, 'Nothing here yet. Open a video and add it from there.'),
     );
   });
@@ -479,12 +489,12 @@ function drawSettings(container) {
     const pending = data.pending.map((change) =>
       h('div', { class: 'row spread' },
         h('span', {}, `${FIELDS.find(([k]) => k === change.key)[1]} → ${change.value}, on ${new Date(change.apply_at * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`),
-        h('button', {
+        iconButton('x', 'Cancel this change', {
           onclick: async () => {
             await api(`/api/settings/pending/${change.id}`, { method: 'DELETE' });
             drawSettings(container);
           },
-        }, 'Cancel')));
+        })));
     fill(container,
       h('form', {
         class: 'panel stack',
@@ -511,7 +521,7 @@ function drawSettings(container) {
 
 // ---- player ----
 
-function watchPage(id, listId) {
+function watchPage(id, listId, startAt) {
   const body = h('div', { class: 'stack' }, h('p', { class: 'muted' }, 'Loading video…'));
   view.replaceChildren(body);
   let player = null;
@@ -528,6 +538,7 @@ function watchPage(id, listId) {
     if (kept.id === id) {
       player = kept;
       kept.show(body);
+      if (startAt !== null) kept.el.currentTime = startAt;
       return;
     }
     kept.destroy();
@@ -537,7 +548,7 @@ function watchPage(id, listId) {
       if (gone) return;
       const { subscriptions } = await api('/api/subscriptions');
       if (gone) return;
-      player = buildPlayer(body, video, subscriptions, listId);
+      player = buildPlayer(body, video, subscriptions, listId, startAt);
     },
     (error) => {
       if (gone) return;
@@ -577,40 +588,68 @@ function rememberVolume(el) {
   });
 }
 
-function linkified(text) {
-  return text.split(/(https?:\/\/[^\s]+)/).map((part, i) => (i % 2
-    ? h('a', { href: part, target: '_blank', rel: 'noopener noreferrer' }, part)
-    : part));
+const YOUTUBE_LINK = /^https?:\/\/(?:(?:www|m|music)\.)?(?:youtube\.com|youtu\.be)\//i;
+
+function linkTo(url) {
+  // A link to YouTube stays in the app.
+  return YOUTUBE_LINK.test(url)
+    ? h('a', { href: `/share?url=${encodeURIComponent(url)}` }, url)
+    : h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, url);
 }
 
-function descriptionSection(text) {
+function timestampSeconds(text) {
+  const parts = text.split(':').map(Number);
+  if (parts.slice(1).some((n) => n >= 60)) return null;
+  return parts.reduce((total, n) => total * 60 + n, 0);
+}
+
+// `player` is what timestamps act on: { duration, seek }.
+function linkified(text, player) {
+  return text.split(/(https?:\/\/\S+|(?<![\w:.])(?:\d{1,2}:)?\d{1,2}:\d{2}(?![\w:]))/).map((part, i) => {
+    if (!(i % 2)) return part;
+    if (/^https?:/i.test(part)) return linkTo(part);
+    const seconds = timestampSeconds(part);
+    if (seconds === null || seconds > player.duration) return part;
+    return h('a', {
+      href: `#/watch/${player.id}?t=${seconds}`,
+      onclick: (event) => {
+        event.preventDefault();
+        player.seek(seconds);
+      },
+    }, part);
+  });
+}
+
+function descriptionSection(text, player) {
   if (!text.trim()) return null;
   return h('details', { class: 'panel' },
     h('summary', {}, 'Description'),
-    h('p', { class: 'prose' }, linkified(text)));
+    h('p', { class: 'prose' }, linkified(text, player)));
 }
 
-function commentsSection(videoId) {
-  const box = h('section', { class: 'stack' });
-  const show = h('button', {
-    onclick: () => {
+function commentsSection(player) {
+  const box = h('div', { class: 'stack' });
+  let loaded = false;
+  return h('details', {
+    class: 'panel',
+    ontoggle: (event) => {
+      if (loaded || !event.target.open) return;
+      loaded = true;
       withLoading(box, 'Loading comments…', async () => {
-        const { comments } = await api(`/api/video/${videoId}/comments`);
+        const { comments } = await api(`/api/video/${player.id}/comments`);
         if (!comments.length) {
           box.replaceChildren(h('p', { class: 'muted' }, 'No comments.'));
           return;
         }
-        box.replaceChildren(h('h3', {}, 'Top comments'), ...comments.map((c) =>
+        box.replaceChildren(...comments.map((c) =>
           h('article', { class: 'comment' },
             h('div', { class: 'row' },
               h('span', { class: 'title' }, c.author),
               h('span', { class: 'muted' }, [c.pinned && 'pinned', c.when, c.likes && `${c.likes.toLocaleString()} likes`].filter(Boolean).join(' · '))),
-            h('p', { class: 'prose' }, c.text))));
+            h('p', { class: 'prose' }, linkified(c.text, player)))));
       });
     },
-  }, 'Show comments');
-  box.append(h('div', {}, show));
-  return box;
+  }, h('summary', {}, 'Comments'), box);
 }
 
 function addToPlaylist(video) {
@@ -635,7 +674,7 @@ function addToPlaylist(video) {
       note.textContent = error.message;
     }
   });
-  return h('div', { class: 'row' }, select, note);
+  return [h('label', { class: 'icon-button picker', title: 'Add to playlist' }, icon('list-plus'), select), note];
 }
 
 // A link, never a timer: moving on stays a decision.
@@ -653,7 +692,11 @@ function nextInPlaylist(videoId, listId, onFound) {
   return box;
 }
 
-function buildPlayer(body, video, subscriptions, listId) {
+function setPressed(button, on) {
+  button.setAttribute('aria-pressed', String(on));
+}
+
+function buildPlayer(body, video, subscriptions, listId, startAt) {
   const positionKey = `position:${video.id}`;
   const el = h('video', { controls: true, playsInline: true, preload: 'auto' });
   rememberVolume(el);
@@ -661,11 +704,20 @@ function buildPlayer(body, video, subscriptions, listId) {
   const qualitySelect = h('select', { 'aria-label': 'Quality' }, h('option', { value: '-1' }, 'auto'));
   const speedSelect = h('select', { 'aria-label': 'Speed' },
     ['1', '1.25', '1.5', '1.75', '2'].map((v) => h('option', { value: v }, `${v}x`)));
-  const audioToggle = h('button', { type: 'button' }, 'Audio only');
-  const theaterToggle = h('button', { type: 'button', class: 'theater-toggle' }, 'Theater');
+  const audioToggle = iconButton('headphones', 'Audio only');
+  const theaterToggle = iconButton('rectangle-horizontal', 'Theater', { class: 'theater-toggle' });
   const pipToggle = document.pictureInPictureEnabled
-    ? h('button', { type: 'button' }, 'Picture in picture')
+    ? iconButton('picture-in-picture-2', 'Picture in picture')
     : null;
+  const timestamps = {
+    id: video.id,
+    duration: video.duration,
+    seek: (seconds) => {
+      el.currentTime = seconds;
+      el.play().catch(() => {});
+      window.scrollTo(0, 0);
+    },
+  };
 
   let nextLink = null;
   const details = (
@@ -679,15 +731,15 @@ function buildPlayer(body, video, subscriptions, listId) {
           ? subscribeButton(video.channel_id, video.channel, subscriptions.some((c) => c.channel_id === video.channel_id))
           : null),
       h('div', { class: 'row player-tools' },
-        h('label', {}, 'quality', qualitySelect),
-        h('label', {}, 'speed', speedSelect),
+        speedSelect,
+        qualitySelect,
         audioToggle,
+        pipToggle,
         theaterToggle,
-        pipToggle),
-      addToPlaylist(video),
+        addToPlaylist(video)),
       nextInPlaylist(video.id, listId, (link) => { nextLink = link; }),
-      descriptionSection(video.description),
-      commentsSection(video.id),
+      descriptionSection(video.description, timestamps),
+      commentsSection(timestamps),
     )
   );
   stage.replaceChildren(el);
@@ -768,13 +820,13 @@ function buildPlayer(body, video, subscriptions, listId) {
   });
   audioToggle.addEventListener('click', () => {
     audioOnly = !audioOnly;
-    audioToggle.textContent = audioOnly ? 'Show video' : 'Audio only';
+    setPressed(audioToggle, audioOnly);
     load(el.currentTime, !el.paused);
   });
 
   const applyTheater = (on) => {
     stage.classList.toggle('theater', on);
-    theaterToggle.textContent = on ? 'Default view' : 'Theater';
+    setPressed(theaterToggle, on);
     localStorage.setItem('theater', String(on));
   };
   applyTheater(localStorage.getItem('theater') === 'true');
@@ -791,10 +843,10 @@ function buildPlayer(body, video, subscriptions, listId) {
     }
   });
   el.addEventListener('enterpictureinpicture', () => {
-    if (pipToggle) pipToggle.textContent = 'Close mini window';
+    if (pipToggle) setPressed(pipToggle, true);
   });
   el.addEventListener('leavepictureinpicture', () => {
-    if (pipToggle) pipToggle.textContent = 'Picture in picture';
+    if (pipToggle) setPressed(pipToggle, false);
     if (floating !== player) return;
     // The window's X pauses the video. "Back to tab" and running out of time don't.
     if (el.paused && !blocked) {
@@ -842,7 +894,7 @@ function buildPlayer(body, video, subscriptions, listId) {
   }
 
   const saved = Number(localStorage.getItem(positionKey) ?? 0);
-  load(saved > 5 ? saved : -1, true);
+  load(startAt ?? (saved > 5 ? saved : -1), true);
 
   onStatus = () => {};
   const player = {
@@ -875,6 +927,7 @@ function route() {
   const [path, query] = location.hash.replace(/^#\/?/, '').split('?');
   const parts = path.split('/');
   const [page, arg] = [parts[0], parts.slice(1).join('/')];
+  const params = new URLSearchParams(query);
   const sections = { channel: 'channels', channels: 'channels', usage: 'usage', history: 'history', playlists: 'playlists', playlist: 'playlists', watch: '' };
   const section = sections[page] ?? 'search';
   for (const link of document.querySelectorAll('[data-nav]')) {
@@ -882,12 +935,12 @@ function route() {
   }
   window.scrollTo(0, 0);
   if (page === 'search') searchPage(decodeURIComponent(arg));
-  else if (page === 'watch') watchPage(arg, new URLSearchParams(query).get('list'));
+  else if (page === 'watch') watchPage(arg, params.get('list'), params.has('t') ? Number(params.get('t')) : null);
   else if (page === 'channels') channelsPage();
   else if (page === 'channel') channelPage(arg);
   else if (page === 'usage') usagePage();
   else if (page === 'history') historyPage();
-  else if (page === 'playlists') playlistsPage();
+  else if (page === 'playlists') playlistsPage(params.get('import'));
   else if (page === 'playlist') playlistPage(arg);
   else searchPage(null);
 }

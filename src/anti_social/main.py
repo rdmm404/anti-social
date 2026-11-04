@@ -11,7 +11,13 @@ from typing import Any
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -20,7 +26,15 @@ from .config import Config
 from .ledger import Ledger, LedgerError
 from .media import master_playlist, media_playlist
 from .playlists import Playlists
-from .youtube import FORMAT_ID, VIDEO_ID, ExtractionError, Listing, YouTube
+from .youtube import (
+    FORMAT_ID,
+    VIDEO_ID,
+    ExtractionError,
+    Listing,
+    YouTube,
+    app_route,
+    shared_route,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 HISTORY_PAGE = 50
@@ -97,6 +111,14 @@ def create_app(
     @app.exception_handler(LedgerError)
     async def refused(_: Request, exc: LedgerError) -> JSONResponse:
         return JSONResponse({"error": "refused", "message": str(exc)}, status_code=409)
+
+    @app.exception_handler(404)
+    async def youtube_url_or_not_found(request: Request, exc: HTTPException) -> Response:
+        """Swapping a YouTube link's domain for this server's opens the same thing here."""
+        route = app_route(request.url.path, request.query_params)
+        if route and request.method == "GET":
+            return RedirectResponse(f"/{route}", status_code=302)
+        return JSONResponse({"detail": exc.detail}, status_code=404)
 
     def require_time() -> JSONResponse | None:
         if app.state.ledger.can_watch():
@@ -331,6 +353,10 @@ def create_app(
             video_id, segment.start_time, segment.end_time, clean_title(stream.title), stream.channel
         )
         return relay(upstream, "video/mp4", segment.end_byte - segment.start_byte + 1)
+
+    @app.get("/share")
+    async def share(url: str = "", text: str = "") -> RedirectResponse:
+        return RedirectResponse(f"/{shared_route(url, text)}", status_code=302)
 
     @app.get("/")
     async def index_page() -> FileResponse:

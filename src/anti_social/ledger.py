@@ -5,6 +5,9 @@ Time is charged for media the server delivers, not for what a client reports:
 - each second of a video is charged once per budget day, so audio and video
   tracks, quality switches, reloads and a second device never double-charge.
 
+An unlock tops up the day's budget instead of starting a countdown, so pausing
+doesn't waste it and a faster playback speed doesn't stretch it.
+
 Any later platform can spend from the same budget by calling `charge`.
 """
 
@@ -52,7 +55,7 @@ CREATE TABLE IF NOT EXISTS unlocks (
     id INTEGER PRIMARY KEY,
     day TEXT NOT NULL,
     starts_at REAL NOT NULL,
-    ends_at REAL NOT NULL
+    seconds REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS subscriptions (
     channel_id TEXT PRIMARY KEY,
@@ -99,6 +102,7 @@ class Ledger:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
+        self._migrate_unlocks()
         seeds = {
             "daily_minutes": config.seed_daily_minutes,
             "unlocks_per_day": config.seed_unlocks_per_day,
@@ -109,6 +113,16 @@ class Ledger:
             self._db.executemany(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", seeds.items()
             )
+
+    def _migrate_unlocks(self) -> None:
+        """Unlocks used to be a time window. The window's length is the top-up it was worth."""
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(unlocks)")}
+        if "ends_at" not in columns:
+            return
+        with self._db:
+            self._db.execute("ALTER TABLE unlocks ADD COLUMN seconds REAL NOT NULL DEFAULT 0")
+            self._db.execute("UPDATE unlocks SET seconds = ends_at - starts_at")
+            self._db.execute("ALTER TABLE unlocks DROP COLUMN ends_at")
 
     # ---- budget day ----
 
@@ -198,17 +212,21 @@ class Ledger:
 
     # ---- unlocks ----
 
-    def _latest_unlock(self) -> sqlite3.Row | None:
-        row: sqlite3.Row | None = self._db.execute(
-            "SELECT starts_at, ends_at FROM unlocks WHERE ends_at > ?"
-            " ORDER BY ends_at DESC LIMIT 1",
+    def _waiting_unlock_start(self) -> float | None:
+        row = self._db.execute(
+            "SELECT MAX(starts_at) AS starts_at FROM unlocks WHERE starts_at > ?",
             (self._clock(),),
         ).fetchone()
-        return row
+        starts_at: float | None = row["starts_at"]
+        return starts_at
 
-    def _unlock_active(self) -> bool:
-        unlock = self._latest_unlock()
-        return bool(unlock and unlock["starts_at"] <= self._clock())
+    def _budget_seconds(self) -> float:
+        """The daily budget plus every unlock that has finished its wait."""
+        row = self._db.execute(
+            "SELECT COALESCE(SUM(seconds), 0) AS added FROM unlocks WHERE day = ? AND starts_at <= ?",
+            (self._day(), self._clock()),
+        ).fetchone()
+        return self.settings()["daily_minutes"] * 60 + float(row["added"])
 
     def _unlocks_used(self) -> int:
         row = self._db.execute(
@@ -218,26 +236,28 @@ class Ledger:
 
     def start_unlock(self) -> dict[str, Any]:
         settings = self.settings()
-        if self._latest_unlock():
-            raise LedgerError("An unlock is already running.")
-        if self._used_seconds() < settings["daily_minutes"] * 60:
+        if self._waiting_unlock_start():
+            raise LedgerError("An unlock is already on its way.")
+        if self._used_seconds() < self._budget_seconds():
             raise LedgerError("Unlocks open once today's budget runs out.")
         if self._unlocks_used() >= settings["unlocks_per_day"]:
             raise LedgerError("No unlocks left today.")
-        starts_at = self._clock() + settings["unlock_wait_seconds"]
-        ends_at = starts_at + settings["unlock_minutes"] * 60
         with self._db:
             self._db.execute(
-                "INSERT INTO unlocks (day, starts_at, ends_at) VALUES (?, ?, ?)",
-                (self._day(), starts_at, ends_at),
+                "INSERT INTO unlocks (day, starts_at, seconds) VALUES (?, ?, ?)",
+                (
+                    self._day(),
+                    self._clock() + settings["unlock_wait_seconds"],
+                    settings["unlock_minutes"] * 60,
+                ),
             )
         return self.status()
 
     # ---- charging ----
 
-    def _used_seconds(self) -> float:
+    def _used_seconds(self, column: str = "charged_seconds + unlocked_seconds") -> float:
         row = self._db.execute(
-            "SELECT COALESCE(SUM(charged_seconds), 0) AS used FROM watched WHERE day = ?",
+            f"SELECT COALESCE(SUM({column}), 0) AS used FROM watched WHERE day = ?",
             (self._day(),),
         ).fetchone()
         return float(row["used"])
@@ -253,9 +273,7 @@ class Ledger:
         return intervals
 
     def can_watch(self) -> bool:
-        if self._unlock_active():
-            return True
-        return self._used_seconds() < self.settings()["daily_minutes"] * 60
+        return self._used_seconds() < self._budget_seconds()
 
     def may_deliver(self, video_id: str, start: float, end: float) -> bool:
         """Media already paid for today stays available even after time runs out."""
@@ -269,7 +287,9 @@ class Ledger:
         new, merged = add_interval(self._intervals(video_id), start, end)
         if new <= 0:
             return 0.0
-        free = self._unlock_active()
+        # The daily budget pays first. Whatever it can't cover came from an unlock.
+        daily_left = self.settings()["daily_minutes"] * 60 - self._used_seconds("charged_seconds")
+        charged = min(new, max(0.0, daily_left))
         with self._db:
             self._db.execute(
                 "INSERT INTO watched"
@@ -286,8 +306,8 @@ class Ledger:
                     title,
                     channel,
                     json.dumps(merged),
-                    0.0 if free else new,
-                    new if free else 0.0,
+                    charged,
+                    new - charged,
                     self._clock(),
                 ),
             )
@@ -297,23 +317,20 @@ class Ledger:
 
     def status(self) -> dict[str, Any]:
         settings = self.settings()
-        budget = settings["daily_minutes"] * 60
+        budget = self._budget_seconds()
         used = self._used_seconds()
-        unlock = self._latest_unlock()
-        now = self._clock()
         return {
             "budget_seconds": budget,
             "used_seconds": round(used),
             "remaining_seconds": max(0, round(budget - used)),
-            "can_watch": self.can_watch(),
+            "can_watch": used < budget,
             "resets_at": self._resets_at(),
             "unlocks_left": max(0, settings["unlocks_per_day"] - self._unlocks_used()),
             "budget_spent": used >= budget,
             "unlock_minutes": settings["unlock_minutes"],
             "unlock_wait_seconds": settings["unlock_wait_seconds"],
-            "unlock_starts_at": unlock["starts_at"] if unlock else None,
-            "unlock_ends_at": unlock["ends_at"] if unlock else None,
-            "now": now,
+            "unlock_starts_at": self._waiting_unlock_start(),
+            "now": self._clock(),
         }
 
     def history(self, days: int = 7) -> dict[str, Any]:

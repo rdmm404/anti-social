@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import struct
 from pathlib import Path
 from typing import cast
@@ -13,7 +14,15 @@ from anti_social.ledger import Ledger, LedgerError, add_interval
 from anti_social.main import create_app
 from anti_social.playlists import Playlists
 from anti_social.media import SegmentIndex, Segment, Track, locate_sidx, media_playlist, parse_index
-from anti_social.youtube import Stream, YouTube, comments_from_info, listings_from_info, stream_from_info
+from anti_social.youtube import (
+    Stream,
+    YouTube,
+    app_route,
+    comments_from_info,
+    listings_from_info,
+    shared_route,
+    stream_from_info,
+)
 
 HOUR = 3600
 
@@ -86,16 +95,55 @@ def test_budget_resets_at_day_start_not_midnight(ledger, clock):
 # ---- unlocks ----
 
 
-def test_unlock_waits_then_opens_without_spending_budget(ledger, clock):
+def test_unlock_waits_then_tops_up_the_budget(ledger, clock):
     ledger.charge("v", 0, 600, "t", "c")
     ledger.start_unlock()
     assert not ledger.can_watch()  # Still in the wait.
+    assert ledger.status()["remaining_seconds"] == 0
     clock.now += 61
     assert ledger.can_watch()
+    assert ledger.status()["remaining_seconds"] == 30 * 60
     ledger.charge("v", 600, 700, "t", "c")
-    assert ledger.status()["used_seconds"] == 600
-    clock.now += 31 * 60
+    assert ledger.status()["remaining_seconds"] == 30 * 60 - 100
+    clock.now += 2 * HOUR  # Pausing doesn't use it up.
+    assert ledger.status()["remaining_seconds"] == 30 * 60 - 100
+    ledger.charge("v", 700, 600 + 30 * 60, "t", "c")
     assert not ledger.can_watch()
+    assert ledger.status()["budget_spent"] is True
+
+
+def test_history_separates_budget_time_from_unlocked_time(ledger, clock):
+    ledger.charge("v", 0, 500, "t", "c")
+    ledger.charge("v", 500, 600, "t", "c")
+    ledger.start_unlock()
+    clock.now += 61
+    ledger.charge("v", 600, 700, "t", "c")
+    today = ledger.history()["days"][0]
+    assert today["charged_seconds"] == 600
+    assert today["unlocked_seconds"] == 100
+
+
+def test_unused_top_up_ends_with_the_day(ledger, clock):
+    ledger.charge("v", 0, 600, "t", "c")
+    ledger.start_unlock()
+    clock.now += 17 * HOUR
+    assert ledger.status()["budget_seconds"] == 600
+
+
+def test_old_unlock_windows_become_top_ups(config, clock):
+    config.data_dir.mkdir(exist_ok=True)
+    db = sqlite3.connect(config.db_path)
+    db.execute(
+        "CREATE TABLE unlocks (id INTEGER PRIMARY KEY, day TEXT NOT NULL,"
+        " starts_at REAL NOT NULL, ends_at REAL NOT NULL)"
+    )
+    db.execute(
+        "INSERT INTO unlocks (day, starts_at, ends_at) VALUES ('2026-06-15', ?, ?)",
+        (clock.now - 60, clock.now - 60 + 1800),
+    )
+    db.commit()
+    db.close()
+    assert Ledger(config, clock).status()["budget_seconds"] == 600 + 1800
 
 
 def test_unlock_refused_while_budget_remains(ledger):
@@ -111,12 +159,16 @@ def test_unlock_refused_while_budget_remains(ledger):
 def test_unlocks_are_limited_per_day_and_cannot_overlap(ledger, clock):
     ledger.charge("v", 0, 600, "t", "c")
     ledger.start_unlock()
-    with pytest.raises(LedgerError):
+    with pytest.raises(LedgerError):  # Still waiting.
         ledger.start_unlock()
-    clock.now += 32 * 60
+    clock.now += 61
+    with pytest.raises(LedgerError):  # Its minutes haven't been used.
+        ledger.start_unlock()
+    ledger.charge("v", 600, 600 + 30 * 60, "t", "c")
     ledger.start_unlock()
-    clock.now += 32 * 60
-    with pytest.raises(LedgerError):
+    clock.now += 61
+    ledger.charge("v", 600 + 30 * 60, 600 + 60 * 60, "t", "c")
+    with pytest.raises(LedgerError):  # Both used.
         ledger.start_unlock()
 
 
@@ -467,6 +519,63 @@ def test_comments_close_with_the_budget(client):
     client.get("/media/abcdefghijk/299/seg/0.m4s")
     client.get("/media/abcdefghijk/299/seg/1.m4s")
     assert client.get("/api/video/abcdefghijk/comments").status_code == 402
+
+
+# ---- opening YouTube links ----
+
+
+@pytest.mark.parametrize(
+    "path, query, expected",
+    [
+        ("/watch", {"v": "abcdefghijk"}, "#/watch/abcdefghijk"),
+        ("/watch", {"v": "abcdefghijk", "t": "1m30s"}, "#/watch/abcdefghijk?t=90"),
+        ("/watch", {"v": "abcdefghijk", "t": "90"}, "#/watch/abcdefghijk?t=90"),
+        ("/watch", {"v": "too-short"}, None),
+        ("/shorts/abcdefghijk", {}, "#/watch/abcdefghijk"),
+        ("/live/abcdefghijk", {}, "#/watch/abcdefghijk"),
+        ("/embed/abcdefghijk", {"start": "5"}, "#/watch/abcdefghijk?t=5"),
+        ("/abcdefghijk", {"si": "tracking"}, "#/watch/abcdefghijk"),
+        ("/results", {"search_query": "a/b c"}, "#/search/a%2Fb%20c"),
+        ("/playlist", {"list": "PLabcdefghij"}, "#/playlists?import=PLabcdefghij"),
+        ("/channel/UCabcdefghijklmnopqrstuv", {}, "#/channel/UCabcdefghijklmnopqrstuv"),
+        ("/@someone", {}, "#/channel/@someone"),
+        ("/@someone/videos", {}, "#/channel/@someone"),
+        ("/feed/subscriptions", {}, None),
+        ("/", {}, None),
+    ],
+)
+def test_app_route(path, query, expected):
+    assert app_route(path, query) == expected
+
+
+@pytest.mark.parametrize(
+    "url, text, expected",
+    [
+        ("https://youtu.be/abcdefghijk?si=x", "", "#/watch/abcdefghijk"),
+        ("", "Look at this https://www.youtube.com/watch?v=abcdefghijk&t=7", "#/watch/abcdefghijk?t=7"),
+        ("https://youtube.com/feed/trending", "", "#/"),
+        ("https://example.com/abcdefghijk", "", "#/search/https%3A%2F%2Fexample.com%2Fabcdefghijk"),
+        ("", "cat videos", "#/search/cat%20videos"),
+        ("", "", "#/"),
+    ],
+)
+def test_shared_route(url, text, expected):
+    assert shared_route(url, text) == expected
+
+
+def test_youtube_paths_redirect_into_the_app(client):
+    for path in ("/watch?v=abcdefghijk", "/abcdefghijk", "/share?url=https://youtu.be/abcdefghijk"):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 302
+        assert response.headers["location"] == "/#/watch/abcdefghijk"
+
+
+def test_the_apps_own_paths_are_left_alone(client):
+    assert client.get("/app.js").status_code == 200
+    assert client.get("/vendor/lucide.svg").status_code == 200
+    missing = client.get("/not/a/thing", follow_redirects=False)
+    assert missing.status_code == 404
+    assert client.get("/api/playlists/999", follow_redirects=False).status_code == 404
 
 
 def test_master_playlist_route(client):

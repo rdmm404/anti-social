@@ -52,9 +52,23 @@ it daily.
   reloads and a second device don't double-charge.
 - Charges happen on delivery, so roughly 20-30 seconds of buffered video is paid for ahead
   of playback. Speed doesn't change the cost: 10 minutes of video costs 10 minutes at 2x.
-- Unlocks only open once the day's budget is spent. During one, watching isn't charged.
+- Unlocks only open once the day's budget is spent. After the wait, one adds its minutes
+  to today's budget. They last until they're watched or the day resets, and pausing doesn't
+  use them.
 - Tighter limits apply immediately. Looser ones wait out the cooling-off period and can be
   cancelled. Saving a different value restarts the wait.
+
+## Opening YouTube links
+
+Replace a YouTube link's domain with this server's and it opens here:
+`https://yt.nautilus.voltr.org/watch?v=ID`. `/shorts/`, `/live/`, `/embed/`, `/@handle`,
+`/channel/`, `/results` and `/playlist` work too, as does the path from a `youtu.be` link.
+Pasting a link into the search box does the same.
+
+- **Android:** install the app from Chrome, then share a link to `anti-social` from any app.
+- **Desktop:** in a redirect extension such as Redirector, send
+  `^https?://(?:www\.|m\.)?youtube\.com/(.*)` and `^https?://youtu\.be/(.*)` to
+  `https://yt.nautilus.voltr.org/$1`.
 
 ## Layout
 
@@ -66,7 +80,7 @@ it daily.
 | `playlists.py` | Saved video lists |
 | `branding.py` | Title cleanup and generated-frame thumbnails |
 | `main.py` | HTTP routes |
-| `static/` | Frontend, with hls.js and JetBrains Mono vendored |
+| `static/` | Frontend, with hls.js, JetBrains Mono and a Lucide icon sprite vendored |
 
 ## Later
 

@@ -9,9 +9,10 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, urlparse
 
 import httpx
 
@@ -31,6 +32,15 @@ SEARCH_RESULTS = 20
 CHANNEL_RESULTS = 30
 PLAYLIST_RESULTS = 500
 HEAD_BYTES = 64 * 1024
+YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+    "www.youtube-nocookie.com",
+}
+ID_PATHS = {"shorts", "live", "embed", "v"}
 
 
 class ExtractionError(Exception):
@@ -60,6 +70,52 @@ class Stream:
     headers: dict[str, str]
     expires_at: float
     indexes: dict[str, SegmentIndex] = field(default_factory=dict)
+
+
+def _seconds(value: str) -> int | None:
+    """Read YouTube's start times: 90, 90s or 1h2m3s."""
+    match = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?", value)
+    if not value or not match:
+        return None
+    hours, minutes, seconds = (int(part or 0) for part in match.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def app_route(path: str, query: Mapping[str, str]) -> str | None:
+    """Where the path and query of a YouTube URL land in this app, if anywhere."""
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        return None
+    first, last = parts[0], parts[-1]
+    video_id = None
+    if first == "watch":
+        video_id = query.get("v")
+    elif first in ID_PATHS and len(parts) > 1:
+        video_id = parts[1]
+    elif len(parts) == 1:  # youtu.be/<id>
+        video_id = first
+    if video_id and VIDEO_ID.match(video_id):
+        start = _seconds(query.get("t") or query.get("start") or "")
+        return f"#/watch/{video_id}" + (f"?t={start}" if start else "")
+    if first == "results" and query.get("search_query"):
+        return f"#/search/{quote(query['search_query'], safe='')}"
+    if first == "playlist" and PLAYLIST_ID.match(query.get("list", "")):
+        return f"#/playlists?import={query['list']}"
+    channel = last if first == "channel" else first
+    if (first == "channel" or first.startswith("@")) and CHANNEL_ID.match(channel):
+        return f"#/channel/{channel}"
+    return None
+
+
+def shared_route(url: str, text: str) -> str:
+    """Where something shared with the app goes. Apps put the link in either field."""
+    link = re.search(r"https?://\S+", f"{url} {text}")
+    if link:
+        parsed = urlparse(link.group())
+        if (parsed.hostname or "").lower() in YOUTUBE_HOSTS:
+            return app_route(parsed.path, dict(parse_qsl(parsed.query))) or "#/"
+    words = (text or url).strip()
+    return f"#/search/{quote(words[:200], safe='')}" if words else "#/"
 
 
 def _expiry(url: str) -> float:
