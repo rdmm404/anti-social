@@ -113,7 +113,7 @@ fun HomeScreen(budget: Budget, searchTab: FocusRequester, open: (Route) -> Unit)
             Panel {
                 Label("${minutesText(status.remainingSeconds)} left today", Type.h1)
                 BudgetMeter(status)
-                Label("Resets at ${timeOfDay(status.resetsAt)}.", Type.muted)
+                Label("Resets at ${timeOfDay(status.resetsAt)}", Type.muted)
             }
         }
     }

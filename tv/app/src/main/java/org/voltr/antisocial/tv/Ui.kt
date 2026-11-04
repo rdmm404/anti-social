@@ -156,7 +156,7 @@ fun OutOfTimePanel(budget: Budget, modifier: Modifier = Modifier) {
     Panel(modifier) {
         Label("No time left today", Type.h2)
         if (status == null) return@Panel
-        Label("Your budget resets at ${timeOfDay(status.resetsAt)}.", Type.muted)
+        Label("Your budget resets at ${timeOfDay(status.resetsAt)}", Type.muted)
         val waiting = status.unlockWaitLeft
         when {
             waiting != null -> Label("Adding ${status.unlockMinutes} min in ${waiting}s.")
