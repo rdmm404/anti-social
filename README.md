@@ -102,6 +102,13 @@ base64 -w0 release.jks | gh secret set TV_KEYSTORE_BASE64
 gh secret set TV_KEYSTORE_PASSWORD
 ```
 
+To update the TV without adb, open Downloader (free on the Amazon Appstore) and enter the code
+`4875990`. It is an aftv.news short link to
+`https://github.com/rdmm404/anti-social/releases/latest/download/anti-social-tv.apk`, so it
+always fetches the newest release. Downloader needs "Install unknown apps" allowed under
+Settings → My Fire TV → Developer Options. A build signed with another key, such as a local
+one, has to be uninstalled first.
+
 ## Layout
 
 | File | Responsibility |
