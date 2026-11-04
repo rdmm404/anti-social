@@ -188,7 +188,7 @@ select {
 button {
   min-height: 34px;
   padding: var(--u) calc(var(--u) * 3);
-  background: transparent;
+  background: var(--surface);
   border: 1px solid var(--line);
   cursor: pointer;
 }
@@ -222,7 +222,7 @@ button:disabled {
   height: 34px;
   min-height: 34px;
   padding: 0;
-  background: transparent;
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r);
   color: var(--fg);
@@ -261,6 +261,8 @@ button:disabled {
 .menu-item {
   overflow: hidden;
   flex: none;
+  /* Lines the name up with the text in the field below it. */
+  padding: var(--u) calc(var(--u) * 2 + 1px);
   background: transparent;
   border: 0;
   text-align: left;
@@ -296,6 +298,9 @@ select {
 .search {
   display: flex;
   gap: var(--u);
+}
+.search[hidden] {
+  display: none;
 }
 .search input {
   flex: 1;
