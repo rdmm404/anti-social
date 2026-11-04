@@ -71,6 +71,37 @@ Pasting a link into the search box does the same.
   `^https?://(?:www\.|m\.)?youtube\.com/(.*)` and `^https?://youtu\.be/(.*)` to
   `https://yt.nautilus.voltr.org/$1`.
 
+## Fire TV app
+
+`tv/` is a small native app for Android-based Fire TVs. It uses the same API and spends the
+same budget, and all the rules stay on the server. It has search, channels, playlists,
+history, the player and unlocks. Limits are still changed on the web. Fire TVs on Vega OS
+can't sideload it.
+
+```sh
+cd tv
+./gradlew testDebugUnitTest
+./gradlew assembleRelease   # -PantiSocialServer=http://10.0.2.2:8484 for another server
+adb connect <tv-ip>:5555
+adb install -r app/build/outputs/apk/release/app-release.apk
+```
+
+It needs JDK 21 and the Android SDK, with `sdk.dir` in `tv/local.properties`. Local builds are
+signed with the machine's debug key, so installing a release over one means uninstalling first.
+
+Releases are built by `.github/workflows/tv-release.yml`. Push a tag like `tv-v1.2.0` and it
+tests, builds, and attaches `anti-social-tv.apk` to a GitHub release. It signs with a
+keystore kept in the repo secrets `TV_KEYSTORE_BASE64` and `TV_KEYSTORE_PASSWORD` (alias
+`anti-social`), and every release must use that same key or the TV refuses the update. Keep
+a copy of the keystore somewhere safe. To make one:
+
+```sh
+keytool -genkeypair -alias anti-social -keyalg RSA -keysize 2048 -validity 10000 \
+  -keystore release.jks
+base64 -w0 release.jks | gh secret set TV_KEYSTORE_BASE64
+gh secret set TV_KEYSTORE_PASSWORD
+```
+
 ## Layout
 
 | File | Responsibility |
@@ -81,6 +112,7 @@ Pasting a link into the search box does the same.
 | `playlists.py` | Saved video lists |
 | `branding.py` | Title cleanup and generated-frame thumbnails |
 | `main.py` | HTTP routes |
+| `tv/` | The Fire TV app |
 | `static/` | Frontend, with hls.js, JetBrains Mono and a Lucide icon sprite vendored |
 
 ## Later
