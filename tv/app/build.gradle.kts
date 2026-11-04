@@ -17,10 +17,24 @@ android {
         applicationId = "org.voltr.antisocial.tv"
         minSdk = 25 // Fire OS 6, the oldest Android-based Fire TV software still around.
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // CI passes these, and versionCode has to rise with every release or Android refuses the update.
+        versionCode = providers.gradleProperty("versionCode").map(String::toInt).getOrElse(1)
+        versionName = providers.gradleProperty("versionName").getOrElse("dev")
         buildConfigField("String", "SERVER_URL", "\"$server\"")
         manifestPlaceholders["cleartext"] = server.startsWith("http://")
+    }
+
+    signingConfigs {
+        // Set by the release workflow. Every release has to carry the same key, or the TV refuses it.
+        val keystore = System.getenv("ANTI_SOCIAL_KEYSTORE")
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("ANTI_SOCIAL_KEYSTORE_PASSWORD")
+                keyAlias = "anti-social"
+                keyPassword = System.getenv("ANTI_SOCIAL_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -28,9 +42,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            // Sideloaded onto one TV, so the machine's debug key is enough. Keep using the
-            // same machine, or uninstall first: Android refuses an update with another key.
-            signingConfig = signingConfigs.getByName("debug")
+            // Without that keystore (a build on this machine), the debug key is enough. Android
+            // refuses an update signed with another key, so uninstall first when switching.
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 

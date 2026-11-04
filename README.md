@@ -85,9 +85,21 @@ adb connect <tv-ip>:5555
 adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-It needs JDK 21 and the Android SDK, with `sdk.dir` in `tv/local.properties`. Releases are
-signed with the machine's debug key, so installing from another machine means uninstalling
-first.
+It needs JDK 21 and the Android SDK, with `sdk.dir` in `tv/local.properties`. Local builds are
+signed with the machine's debug key, so installing a release over one means uninstalling first.
+
+Releases are built by `.github/workflows/tv-release.yml`. Push a tag like `tv-v1.2.0` and it
+tests, builds, and attaches `anti-social-tv.apk` to a GitHub release. It signs with a
+keystore kept in the repo secrets `TV_KEYSTORE_BASE64` and `TV_KEYSTORE_PASSWORD` (alias
+`anti-social`), and every release must use that same key or the TV refuses the update. Keep
+a copy of the keystore somewhere safe. To make one:
+
+```sh
+keytool -genkeypair -alias anti-social -keyalg RSA -keysize 2048 -validity 10000 \
+  -keystore release.jks
+base64 -w0 release.jks | gh secret set TV_KEYSTORE_BASE64
+gh secret set TV_KEYSTORE_PASSWORD
+```
 
 ## Layout
 
