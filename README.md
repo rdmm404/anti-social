@@ -1,6 +1,7 @@
 # anti-social
 
-A self-hosted, single-user YouTube frontend with a daily time limit the server enforces.
+A self-hosted, single-user YouTube frontend with sessions and a daily time limit, both
+enforced by the server.
 No feed, recommendations, autoplay, Shorts or comments. Thumbnails are frames YouTube
 generates from the video, never the uploader's pick, and titles are stripped of shouting.
 
@@ -39,10 +40,8 @@ it daily.
 | `ANTI_SOCIAL_YTDLP_UPDATE` | none | Command run daily to update yt-dlp. The Docker image sets this. |
 | `ANTI_SOCIAL_DAY_START` | `4` | Local hour when the daily budget resets |
 | `ANTI_SOCIAL_COOLING_OFF_HOURS` | `72` | Wait before a looser limit applies |
-| `ANTI_SOCIAL_DAILY_MINUTES` | `60` | First-run seed only |
-| `ANTI_SOCIAL_UNLOCKS_PER_DAY` | `2` | First-run seed only |
-| `ANTI_SOCIAL_UNLOCK_MINUTES` | `30` | First-run seed only |
-| `ANTI_SOCIAL_UNLOCK_WAIT_SECONDS` | `60` | First-run seed only |
+| `ANTI_SOCIAL_DAILY_MINUTES` | `120` | First-run seed only |
+| `ANTI_SOCIAL_SESSION_GAP_MINUTES` | `20` | First-run seed only |
 
 ## How the limit works
 
@@ -53,11 +52,21 @@ it daily.
   reloads and a second device don't double-charge.
 - Charges happen on delivery, so roughly 20-30 seconds of buffered video is paid for ahead
   of playback. Speed doesn't change the cost: 10 minutes of video costs 10 minutes at 2x.
-- Unlocks only open once the day's budget is spent. After the wait, one adds its minutes
-  to today's budget. They last until they're watched or the day resets, and pausing doesn't
-  use them.
 - Tighter limits apply immediately. Looser ones wait out the cooling-off period and can be
   cancelled. Saving a different value restarts the wait.
+
+## How sessions work
+
+- With no session open, the app asks how many videos you want, from 1 to 3. Search, channels
+  and playlists stay closed until you answer, and the server refuses video and search.
+- A video takes up one of those slots once it's been delivered for 30 seconds. Leaving before
+  that is free up to 3 times per session. After that, a video takes a slot when it starts.
+- When every slot is taken, browsing closes and the session is over. The videos you started
+  can still finish.
+- The next session opens 20 minutes after the last video delivered, and that gap is a setting.
+- A session's unused videos expire after 30 minutes with nothing delivered.
+- A video that took up a slot today can be resumed at any time without using another one. It
+  still counts against the daily limit.
 
 ## Opening YouTube links
 
@@ -113,7 +122,7 @@ one, has to be uninstalled first.
 
 | File | Responsibility |
 | --- | --- |
-| `ledger.py` | Budget, unlocks, cooling-off, subscriptions. Knows nothing about YouTube, so other platforms can share the budget. |
+| `ledger.py` | Budget, sessions, cooling-off, subscriptions. Knows nothing about YouTube, so other platforms can share the budget. |
 | `youtube.py` | All yt-dlp and YouTube knowledge |
 | `media.py` | Parses `sidx` indexes and writes HLS playlists |
 | `playlists.py` | Saved video lists |

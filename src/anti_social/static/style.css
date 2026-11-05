@@ -299,9 +299,6 @@ select {
   display: flex;
   gap: var(--u);
 }
-.search[hidden] {
-  display: none;
-}
 .search input {
   flex: 1;
   min-width: 0;

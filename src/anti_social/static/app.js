@@ -7,6 +7,8 @@ const stage = document.getElementById('stage');
 let status = null;
 let leaveView = () => {};
 let onStatus = () => {};
+// Whether the current page only exists inside a session with a video left.
+let browsing = false;
 // A player that's in picture-in-picture while another page is showing.
 let floating = null;
 
@@ -88,8 +90,8 @@ function failure(error) {
   return h('p', { class: 'problem' }, error.message);
 }
 
-function unlockWaiting(s) {
-  return s.unlock_starts_at && s.unlock_starts_at > s.now;
+function videosText(count) {
+  return `${count} ${count === 1 ? 'video' : 'videos'}`;
 }
 
 // ---- status ----
@@ -101,68 +103,77 @@ async function refreshStatus() {
     return;
   }
   renderClock();
+  if (browsing && status.state !== 'open') {
+    route();
+    return;
+  }
   onStatus(status);
 }
 
 function renderClock() {
   const s = status;
   clock.className = 'clock';
-  if (unlockWaiting(s)) {
-    clock.textContent = `unlock in ${Math.ceil(s.unlock_starts_at - s.now)}s`;
-  } else if (!s.can_watch) {
+  if (!s.can_watch) {
     clock.classList.add('out');
     clock.textContent = 'no time left';
-  } else {
-    if (s.remaining_seconds <= 600) clock.classList.add('low');
-    clock.textContent = `${minutesText(s.remaining_seconds)} left`;
+    return;
   }
+  if (s.remaining_seconds <= 600) clock.classList.add('low');
+  const time = minutesText(s.remaining_seconds);
+  clock.textContent = s.state === 'open' ? `${videosText(s.session.videos_left)} · ${time}` : `${time} left`;
 }
 
-function unlockControl() {
-  const box = h('div', { class: 'stack' });
-  const draw = () => {
-    box.replaceChildren();
+// What stands between you and watching: the question, the gap, or the end of the day.
+function gatePanel() {
+  const panel = h('section', { class: 'panel stack' });
+  let drawn = null;
+  panel.redraw = () => {
     const s = status;
-    if (unlockWaiting(s)) {
-      box.append(h('p', {}, `Adding ${s.unlock_minutes} min in ${Math.ceil(s.unlock_starts_at - s.now)}s.`));
-    } else if (!s.budget_spent) {
-      // Unlocks only open once the budget is gone, so there's nothing to offer yet.
-    } else if (s.unlocks_left > 0) {
-      const error = h('p', { class: 'problem' });
-      box.append(
-        h('div', { class: 'row' },
-          h('button', {
-            onclick: async () => {
-              try {
-                await api('/api/unlock', { method: 'POST' });
-                await refreshStatus();
-              } catch (e) {
-                error.textContent = e.message;
-              }
-            },
-          }, `Use an unlock (${s.unlocks_left} left)`),
-          h('span', { class: 'muted' }, `+${s.unlock_minutes} min, after a ${s.unlock_wait_seconds}s wait`),
-        ),
+    const key = `${s.state}:${s.next_session_at}`;
+    if (key === drawn) return;
+    drawn = key;
+    if (s.state === 'choose') {
+      const error = h('p', { class: 'problem', role: 'status' });
+      const start = async (videos) => {
+        try {
+          await api('/api/session', { method: 'POST', body: { videos } });
+          await refreshStatus();
+        } catch (e) {
+          error.textContent = e.message;
+        }
+      };
+      panel.replaceChildren(
+        h('h1', {}, 'How many videos?'),
+        h('div', { class: 'row' }, s.session_choices.map((videos) =>
+          h('button', { class: 'primary', onclick: () => start(videos) }, String(videos)))),
+        h('p', { class: 'muted' }, `${minutesText(s.remaining_seconds)} left today.`),
         error,
       );
-    } else {
-      box.append(h('p', { class: 'muted' }, 'No unlocks left today.'));
+    } else if (s.state === 'gap') {
+      panel.replaceChildren(
+        h('h1', {}, 'Session over'),
+        h('p', {}, `The next one opens at ${timeOfDay(s.next_session_at)}.`),
+        h('p', { class: 'muted' }, `${minutesText(s.remaining_seconds)} left today.`),
+      );
+    } else if (s.state === 'no_time') {
+      panel.replaceChildren(
+        h('h1', {}, 'No time left today'),
+        h('p', { class: 'muted' }, `Your time resets at ${timeOfDay(s.resets_at)}.`),
+      );
     }
   };
-  draw();
-  box.redraw = draw;
-  return box;
+  if (status) panel.redraw();
+  return panel;
 }
 
-function outOfTimePanel() {
-  const control = unlockControl();
-  const panel = h('section', { class: 'panel stack' },
-    h('h2', {}, 'No time left today'),
-    h('p', { class: 'muted' }, `Your budget resets at ${timeOfDay(status.resets_at)}.`),
-    control,
-  );
-  panel.redraw = control.redraw;
-  return panel;
+function gate(container, onOpen) {
+  const panel = gatePanel();
+  container.replaceChildren(panel);
+  onStatus = (s) => {
+    if (s.state === 'open') onOpen();
+    else panel.redraw();
+  };
+  refreshStatus();
 }
 
 // ---- lists ----
@@ -194,7 +205,7 @@ function resultList(results) {
 function withLoading(container, label, load) {
   container.replaceChildren(h('p', { class: 'muted' }, label));
   load().catch((error) => {
-    if (error.code === 402) container.replaceChildren(outOfTimePanel());
+    if (error.code === 402) gate(container, () => withLoading(container, label, load));
     else container.replaceChildren(failure(error));
   });
 }
@@ -221,31 +232,17 @@ function searchPage(query) {
   }, input, iconButton('search', 'Search', { class: 'primary', type: 'submit' }));
 
   const summary = h('div', { class: 'stack' });
-  let locked = null;
   const drawSummary = (s) => {
-    if (!s.can_watch) {
-      if (!locked) {
-        locked = outOfTimePanel();
-        summary.replaceChildren(locked);
-      } else {
-        locked.redraw();
-      }
-      form.hidden = true;
-      return;
-    }
-    locked = null;
-    form.hidden = false;
-    if (query) {
-      summary.replaceChildren();
-      return;
-    }
+    if (query) return;
     const used = s.budget_seconds ? Math.min(1, s.used_seconds / s.budget_seconds) : 1;
     summary.replaceChildren(
       h('section', { class: 'panel stack' },
-        h('h1', {}, `${minutesText(s.remaining_seconds)} left today`),
-        h('div', { class: 'meter', role: 'img', 'aria-label': `${Math.round(used * 100)}% used` },
+        h('h1', {}, `${videosText(s.session.videos_left)} left`),
+        h('div', { class: 'meter', role: 'img', 'aria-label': `${Math.round(used * 100)}% of today's time used` },
           h('div', { style: `width:${used * 100}%` })),
-        h('p', { class: 'muted' }, `Resets at ${timeOfDay(s.resets_at)}.`),
+        h('p', { class: 'muted' }, `${minutesText(s.remaining_seconds)} left today. Resets at ${timeOfDay(s.resets_at)}.`),
+        s.session.samples_left > 0 && h('p', { class: 'muted' },
+          `Leave a video within ${s.sample_seconds} seconds and it won't count (${s.session.samples_left} left).`),
       ),
     );
   };
@@ -330,12 +327,10 @@ function usagePage() {
       h('table', {},
         h('thead', {}, h('tr', {},
           h('th', { class: 'muted' }, 'Day'),
-          h('th', { class: 'muted num' }, 'Budget'),
-          h('th', { class: 'muted num' }, 'Unlocked'))),
+          h('th', { class: 'muted num' }, 'Watched'))),
         h('tbody', {}, data.days.map((d) => h('tr', {},
           h('td', {}, d.day),
-          h('td', { class: 'num' }, minutesText(d.charged_seconds)),
-          h('td', { class: 'num' }, minutesText(d.unlocked_seconds)))))),
+          h('td', { class: 'num' }, minutesText(d.watched_seconds)))))),
       h('p', {}, h('a', { href: '#/history' }, 'See what you watched')),
     );
   });
@@ -361,7 +356,7 @@ function historyPage() {
     }
     list.append(...videos.map((v) => resultRow(
       { id: v.video_id, title: v.title, channel: v.channel },
-      { meta: `${v.day} · ${minutesText(v.charged_seconds + v.unlocked_seconds)}` },
+      { meta: `${v.day} · ${minutesText(v.watched_seconds)}` },
     )));
     offset += videos.length;
     status.replaceChildren();
@@ -473,9 +468,7 @@ function playlistPage(id) {
 
 const FIELDS = [
   ['daily_minutes', 'Minutes per day'],
-  ['unlocks_per_day', 'Unlocks per day'],
-  ['unlock_minutes', 'Minutes per unlock'],
-  ['unlock_wait_seconds', 'Seconds to wait before an unlock'],
+  ['session_gap_minutes', 'Minutes between sessions'],
 ];
 
 function drawSettings(container) {
@@ -561,12 +554,7 @@ function watchPage(id, listId, startAt) {
     (error) => {
       if (gone) return;
       if (error.code === 402) {
-        const panel = outOfTimePanel();
-        body.replaceChildren(panel);
-        onStatus = (s) => {
-          if (s.can_watch) route();
-          else panel.redraw();
-        };
+        gate(body, route);
       } else {
         body.replaceChildren(failure(error));
       }
@@ -758,6 +746,20 @@ function setPressed(button, on) {
   button.setAttribute('aria-pressed', String(on));
 }
 
+function endPanel(s, nextLink) {
+  const title = h('h3', {}, 'That was the video.');
+  const panel = (...rest) => h('section', { class: 'panel stack' }, title, ...rest);
+  if (s.state === 'open') {
+    return panel(
+      h('p', { class: 'muted' }, `${videosText(s.session.videos_left)} left in this session.`),
+      nextLink && h('div', {}, nextLink()),
+      h('div', {}, h('a', { href: '#/' }, 'Back to search')));
+  }
+  if (s.state === 'gap') return panel(h('p', {}, `That's the session. The next one opens at ${timeOfDay(s.next_session_at)}.`));
+  if (s.state === 'no_time') return panel(h('p', {}, `That's all your time today. It resets at ${timeOfDay(s.resets_at)}.`));
+  return panel(h('p', {}, "That's the session."), h('div', {}, h('a', { href: '#/' }, 'Start another')));
+}
+
 function buildPlayer(body, video, subscriptions, listId, startAt) {
   const positionKey = `position:${video.id}`;
   const el = h('video', { controls: true, playsInline: true, preload: 'auto' });
@@ -812,13 +814,13 @@ function buildPlayer(body, video, subscriptions, listId, startAt) {
   let audioOnly = false;
   let blocked = false;
 
-  function showOutOfTime() {
+  function showRefused() {
     if (blocked) return;
     blocked = true;
-    const panel = outOfTimePanel();
+    const panel = gatePanel();
     notice.replaceChildren(panel);
     statusHandler = (s) => {
-      if (s.can_watch) {
+      if (s.state === 'open') {
         blocked = false;
         notice.replaceChildren();
         statusHandler = () => {};
@@ -829,9 +831,10 @@ function buildPlayer(body, video, subscriptions, listId, startAt) {
         panel.redraw();
       }
     };
-    // Out of time in the mini window: close it, which brings this page back.
+    // Refused in the mini window: close it, which brings this page back.
     if (floating === player) document.exitPictureInPicture().catch(() => {});
     else onStatus = statusHandler;
+    refreshStatus();
   }
 
   function load(startAt, autoplay) {
@@ -858,7 +861,7 @@ function buildPlayer(body, video, subscriptions, listId, startAt) {
       hls.on(window.Hls.Events.ERROR, (_, data) => {
         if (data.response?.code === 402) {
           hls.stopLoad();
-          showOutOfTime();
+          showRefused();
         } else if (data.fatal) {
           notice.replaceChildren(failure(new Error('Playback failed. YouTube may have refused this stream.')));
         }
@@ -939,10 +942,7 @@ function buildPlayer(body, video, subscriptions, listId, startAt) {
     localStorage.removeItem(positionKey);
     if (floating === player) document.exitPictureInPicture().catch(() => {});
     // The end of a video is the end. There is no next video.
-    notice.replaceChildren(h('section', { class: 'panel stack' },
-      h('h3', {}, 'That was the video.'),
-      nextLink && h('div', {}, nextLink()),
-      h('div', {}, h('a', { href: '#/' }, 'Back to search'))));
+    refreshStatus().then(() => notice.replaceChildren(endPanel(status, nextLink)));
   });
 
   if ('mediaSession' in navigator) {
@@ -996,6 +996,14 @@ function route() {
     link.classList.toggle('active', link.dataset.nav === section);
   }
   window.scrollTo(0, 0);
+  browsing = false;
+  if (!['watch', 'usage', 'history'].includes(page)) {
+    if (status && status.state !== 'open') {
+      gate(view, route);
+      return;
+    }
+    browsing = true;
+  }
   if (page === 'search') searchPage(decodeURIComponent(arg));
   else if (page === 'watch') watchPage(arg, params.get('list'), params.has('t') ? Number(params.get('t')) : null);
   else if (page === 'channels') channelsPage();

@@ -39,16 +39,10 @@ class Config:
     )
     # First-run seeds. Ignored once the database exists.
     seed_daily_minutes: int = field(
-        default_factory=lambda: _int("ANTI_SOCIAL_DAILY_MINUTES", 60)
+        default_factory=lambda: _int("ANTI_SOCIAL_DAILY_MINUTES", 120)
     )
-    seed_unlocks_per_day: int = field(
-        default_factory=lambda: _int("ANTI_SOCIAL_UNLOCKS_PER_DAY", 2)
-    )
-    seed_unlock_minutes: int = field(
-        default_factory=lambda: _int("ANTI_SOCIAL_UNLOCK_MINUTES", 30)
-    )
-    seed_unlock_wait_seconds: int = field(
-        default_factory=lambda: _int("ANTI_SOCIAL_UNLOCK_WAIT_SECONDS", 60)
+    seed_session_gap_minutes: int = field(
+        default_factory=lambda: _int("ANTI_SOCIAL_SESSION_GAP_MINUTES", 20)
     )
 
     @property

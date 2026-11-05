@@ -44,10 +44,15 @@ YTDLP_UPDATE_INTERVAL = 24 * 3600
 DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 NO_STORE = {"Cache-Control": "no-store"}
 OUT_OF_TIME = {"error": "out_of_time", "message": "You're out of time for today."}
+NO_SESSION = {"error": "no_session", "message": "This needs a session with a video left."}
 
 
 class SettingsChange(BaseModel):
     changes: dict[str, int]
+
+
+class NewSession(BaseModel):
+    videos: int
 
 
 class NewPlaylist(BaseModel):
@@ -135,10 +140,15 @@ def create_app(
             return RedirectResponse(f"/{route}", status_code=302)
         return JSONResponse({"detail": exc.detail}, status_code=404)
 
-    def require_time() -> JSONResponse | None:
-        if app.state.ledger.can_watch():
-            return None
-        return JSONResponse(OUT_OF_TIME, status_code=402, headers=NO_STORE)
+    def refusal() -> JSONResponse:
+        body = OUT_OF_TIME if not app.state.ledger.can_watch() else NO_SESSION
+        return JSONResponse(body, status_code=402, headers=NO_STORE)
+
+    def require_browsing() -> JSONResponse | None:
+        return None if app.state.ledger.can_browse() else refusal()
+
+    def require_video(video_id: str) -> JSONResponse | None:
+        return None if app.state.ledger.may_open(video_id) else refusal()
 
     def present(listings: list[Listing]) -> list[dict[str, Any]]:
         return [
@@ -152,15 +162,15 @@ def create_app(
             for listing in listings
         ]
 
-    # ---- status, unlocks, settings ----
+    # ---- status, sessions, settings ----
 
     @app.get("/api/status")
     async def status() -> Any:
         return app.state.ledger.status()
 
-    @app.post("/api/unlock")
-    async def unlock() -> Any:
-        return app.state.ledger.start_unlock()
+    @app.post("/api/session")
+    async def start_session(body: NewSession) -> Any:
+        return app.state.ledger.start_session(body.videos)
 
     @app.get("/api/settings")
     async def settings() -> Any:
@@ -205,7 +215,7 @@ def create_app(
 
     @app.post("/api/playlists/import")
     async def import_playlist(body: PlaylistImport) -> Any:
-        if blocked := require_time():
+        if blocked := require_browsing():
             return blocked
         name, listings = await app.state.youtube.playlist(body.url)
         store: Playlists = app.state.playlists
@@ -237,11 +247,11 @@ def create_app(
         app.state.playlists.remove(playlist_id, video_id)
         return Response(status_code=204)
 
-    # ---- browsing: closed when there's no time left, so there's nothing to browse ----
+    # ---- browsing: only inside a session with a video left ----
 
     @app.get("/api/search")
     async def search(q: str) -> Any:
-        if blocked := require_time():
+        if blocked := require_browsing():
             return blocked
         query = q.strip()
         if not query:
@@ -250,7 +260,7 @@ def create_app(
 
     @app.get("/api/channel/{channel_id}")
     async def channel(channel_id: str, offset: int = 0) -> Any:
-        if blocked := require_time():
+        if blocked := require_browsing():
             return blocked
         offset = max(0, offset)
         name, listings, has_more = await app.state.youtube.channel(channel_id, offset)
@@ -288,7 +298,7 @@ def create_app(
 
     @app.get("/api/video/{video_id}")
     async def video(video_id: str) -> Any:
-        if blocked := require_time():
+        if blocked := require_video(video_id):
             return blocked
         stream = await app.state.youtube.stream(video_id)
         return {
@@ -303,7 +313,7 @@ def create_app(
 
     @app.get("/api/video/{video_id}/comments")
     async def comments(video_id: str) -> Any:
-        if blocked := require_time():
+        if blocked := require_video(video_id):
             return blocked
         return {"comments": await app.state.youtube.comments(video_id)}
 
@@ -313,7 +323,7 @@ def create_app(
 
     @app.get("/media/{video_id}/master.m3u8")
     async def master(video_id: str) -> Any:
-        if blocked := require_time():
+        if blocked := require_video(video_id):
             return blocked
         stream = await app.state.youtube.stream(video_id)
         return PlainTextResponse(
@@ -355,7 +365,7 @@ def create_app(
 
     @app.get("/media/{video_id}/{format_id}/seg/{number}.m4s")
     async def media_segment(video_id: str, format_id: str, number: int) -> Response:
-        """The enforcement point: no time, no bytes, whatever the client thinks."""
+        """The enforcement point: no time or session, no bytes, whatever the client thinks."""
         check_format(video_id, format_id)
         youtube: YouTube = app.state.youtube
         ledger: Ledger = app.state.ledger
@@ -364,7 +374,7 @@ def create_app(
             raise HTTPException(404)
         segment = index.segments[number]
         if not ledger.may_deliver(video_id, segment.start_time, segment.end_time):
-            return JSONResponse(OUT_OF_TIME, status_code=402, headers=NO_STORE)
+            return refusal()
 
         upstream = await youtube.open_range(
             video_id, format_id, segment.start_byte, segment.end_byte

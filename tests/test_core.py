@@ -48,9 +48,7 @@ def config(tmp_path: Path):
     return Config(
         data_dir=tmp_path,
         seed_daily_minutes=10,
-        seed_unlocks_per_day=2,
-        seed_unlock_minutes=30,
-        seed_unlock_wait_seconds=60,
+        seed_session_gap_minutes=20,
     )
 
 
@@ -92,84 +90,186 @@ def test_budget_resets_at_day_start_not_midnight(ledger, clock):
     assert ledger.status()["used_seconds"] == 0
 
 
-# ---- unlocks ----
+# ---- sessions ----
 
 
-def test_unlock_waits_then_tops_up_the_budget(ledger, clock):
-    ledger.charge("v", 0, 600, "t", "c")
-    ledger.start_unlock()
-    assert not ledger.can_watch()  # Still in the wait.
-    assert ledger.status()["remaining_seconds"] == 0
+def watch(ledger, clock, video, seconds=30):
+    """Deliver a video in one go, the way a client would over that many seconds."""
+    assert ledger.may_deliver(video, 0, 1)
+    ledger.charge(video, 0, 1, "t", "c")
+    clock.now += seconds
+    if seconds:
+        assert ledger.may_deliver(video, 1, 2)
+        ledger.charge(video, 1, 2, "t", "c")
+
+
+def test_nothing_is_delivered_or_browsable_before_choosing(ledger):
+    assert ledger.status()["state"] == "choose"
+    assert not ledger.can_browse()
+    assert not ledger.may_deliver("v", 0, 10)
+    ledger.start_session(1)
+    assert ledger.status()["state"] == "open"
+    assert ledger.can_browse()
+    assert ledger.may_deliver("v", 0, 10)
+
+
+@pytest.mark.parametrize("videos", [0, 4, -1])
+def test_session_size_is_limited(ledger, videos):
+    with pytest.raises(LedgerError):
+        ledger.start_session(videos)
+
+
+def test_only_one_session_at_a_time(ledger):
+    ledger.start_session(1)
+    with pytest.raises(LedgerError):
+        ledger.start_session(1)
+
+
+def test_session_closes_after_its_videos_and_the_kept_one_can_finish(ledger, clock):
+    ledger.start_session(1)
+    watch(ledger, clock, "a")
+    assert ledger.status()["session"]["videos_left"] == 0
+    assert ledger.status()["state"] == "gap"
+    assert not ledger.can_browse()
+    assert not ledger.may_deliver("b", 0, 10)
+    assert ledger.may_deliver("a", 2, 3)
+
+
+def test_gap_counts_from_the_last_delivery(ledger, clock):
+    ledger.start_session(1)
+    watch(ledger, clock, "a")
+    clock.now += 19 * 60
+    ledger.charge("a", 2, 3, "t", "c")  # Still watching, so the gap moves.
+    clock.now += 19 * 60
+    assert ledger.status()["state"] == "gap"
+    with pytest.raises(LedgerError):
+        ledger.start_session(1)
     clock.now += 61
-    assert ledger.can_watch()
-    assert ledger.status()["remaining_seconds"] == 30 * 60
-    ledger.charge("v", 600, 700, "t", "c")
-    assert ledger.status()["remaining_seconds"] == 30 * 60 - 100
-    clock.now += 2 * HOUR  # Pausing doesn't use it up.
-    assert ledger.status()["remaining_seconds"] == 30 * 60 - 100
-    ledger.charge("v", 700, 600 + 30 * 60, "t", "c")
-    assert not ledger.can_watch()
-    assert ledger.status()["budget_spent"] is True
+    assert ledger.status()["state"] == "choose"
+    ledger.start_session(1)
 
 
-def test_history_separates_budget_time_from_unlocked_time(ledger, clock):
-    ledger.charge("v", 0, 500, "t", "c")
-    ledger.charge("v", 500, 600, "t", "c")
-    ledger.start_unlock()
-    clock.now += 61
-    ledger.charge("v", 600, 700, "t", "c")
-    today = ledger.history()["days"][0]
-    assert today["charged_seconds"] == 600
-    assert today["unlocked_seconds"] == 100
+def test_a_new_session_needs_new_slots(ledger, clock):
+    ledger.start_session(1)
+    watch(ledger, clock, "a")
+    clock.now += 21 * 60
+    ledger.start_session(1)
+    watch(ledger, clock, "a", seconds=0)  # Kept already: free to resume.
+    assert ledger.status()["session"]["videos_left"] == 1
+    watch(ledger, clock, "b")
+    assert ledger.status()["session"]["videos_left"] == 0
 
 
-def test_unused_top_up_ends_with_the_day(ledger, clock):
-    ledger.charge("v", 0, 600, "t", "c")
-    ledger.start_unlock()
-    clock.now += 17 * HOUR
-    assert ledger.status()["budget_seconds"] == 600
+def test_leaving_quickly_gives_the_slot_back(ledger, clock):
+    ledger.start_session(1)
+    watch(ledger, clock, "a", seconds=29)
+    status = ledger.status()
+    assert status["session"] == {"videos_left": 1, "samples_left": 2}
+    assert status["state"] == "open"
+    watch(ledger, clock, "b")
+    status = ledger.status()
+    assert status["session"] == {"videos_left": 0, "samples_left": 2}
 
 
-def test_old_unlock_windows_become_top_ups(config, clock):
-    config.data_dir.mkdir(exist_ok=True)
-    db = sqlite3.connect(config.db_path)
-    db.execute(
-        "CREATE TABLE unlocks (id INTEGER PRIMARY KEY, day TEXT NOT NULL,"
-        " starts_at REAL NOT NULL, ends_at REAL NOT NULL)"
-    )
-    db.execute(
-        "INSERT INTO unlocks (day, starts_at, ends_at) VALUES ('2026-06-15', ?, ?)",
-        (clock.now - 60, clock.now - 60 + 1800),
+def test_only_three_samples_are_free(ledger, clock):
+    ledger.start_session(2)
+    for video in "abc":
+        watch(ledger, clock, video, seconds=5)
+    assert ledger.status()["session"] == {"videos_left": 2, "samples_left": 0}
+    watch(ledger, clock, "d", seconds=5)  # Takes a slot straight away.
+    assert ledger.status()["session"]["videos_left"] == 1
+    watch(ledger, clock, "e", seconds=5)
+    assert ledger.status()["state"] == "gap"
+    assert not ledger.may_deliver("f", 0, 1)
+
+
+def test_going_back_to_a_sample_needs_a_free_slot(ledger, clock):
+    ledger.start_session(1)
+    watch(ledger, clock, "a", seconds=5)
+    watch(ledger, clock, "b")
+    assert not ledger.may_deliver("a", 2, 3)  # Past 30 seconds, and the slot went to b.
+    assert ledger.may_deliver("a", 0, 1)  # Already paid for.
+
+
+def test_a_sample_that_keeps_playing_takes_the_slot(ledger, clock):
+    ledger.start_session(1)
+    watch(ledger, clock, "a", seconds=5)
+    clock.now += 60  # Paused, then resumed.
+    assert ledger.may_deliver("a", 2, 3)
+    ledger.charge("a", 2, 3, "t", "c")
+    assert ledger.status()["session"]["videos_left"] == 0
+
+
+def test_unused_videos_expire_when_idle(ledger, clock):
+    ledger.start_session(2)
+    watch(ledger, clock, "a")
+    clock.now += 30 * 60
+    assert ledger.status()["state"] == "choose"
+    assert not ledger.may_deliver("b", 0, 1)
+    assert ledger.may_deliver("a", 2, 3)  # Kept today, so it still resumes.
+
+
+def test_an_untouched_session_leaves_no_gap(ledger, clock):
+    ledger.start_session(1)
+    clock.now += 30 * 60
+    assert ledger.status()["state"] == "choose"
+    ledger.start_session(1)
+
+
+def test_the_new_day_needs_a_new_session(ledger, clock):
+    ledger.start_session(1)
+    watch(ledger, clock, "a")
+    clock.now += 24 * HOUR
+    assert ledger.status()["state"] == "choose"
+    assert not ledger.may_deliver("a", 2, 3)
+
+
+def test_the_daily_cap_outranks_the_session(ledger, clock):
+    ledger.start_session(3)
+    ledger.charge("a", 0, 600, "t", "c")
+    assert ledger.status()["state"] == "no_time"
+    assert not ledger.can_browse()
+    assert not ledger.may_deliver("a", 600, 610)
+    with pytest.raises(LedgerError):
+        ledger.start_session(1)
+
+
+def test_retiring_unlocks_keeps_history_and_raises_the_cap(tmp_path, clock):
+    db = sqlite3.connect(tmp_path / "anti_social.db")
+    db.executescript(
+        """
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+        CREATE TABLE pending_changes (
+            id INTEGER PRIMARY KEY, key TEXT NOT NULL, value INTEGER NOT NULL,
+            requested_at REAL NOT NULL, apply_at REAL NOT NULL
+        );
+        CREATE TABLE unlocks (
+            id INTEGER PRIMARY KEY, day TEXT NOT NULL, starts_at REAL NOT NULL, seconds REAL NOT NULL
+        );
+        CREATE TABLE watched (
+            day TEXT NOT NULL, video_id TEXT NOT NULL, title TEXT NOT NULL, channel TEXT NOT NULL,
+            intervals TEXT NOT NULL, charged_seconds REAL NOT NULL DEFAULT 0,
+            unlocked_seconds REAL NOT NULL DEFAULT 0, last_at REAL NOT NULL,
+            PRIMARY KEY (day, video_id)
+        );
+        INSERT INTO settings VALUES ('daily_minutes', 60), ('unlock_minutes', 20);
+        INSERT INTO pending_changes (key, value, requested_at, apply_at)
+            VALUES ('unlock_minutes', 30, 0, 9e12);
+        INSERT INTO unlocks (day, starts_at, seconds) VALUES ('2026-06-15', 0, 1200);
+        INSERT INTO watched VALUES ('2026-06-14', 'v', 't', 'c', '[]', 3600, 600, 0);
+        """
     )
     db.commit()
     db.close()
-    assert Ledger(config, clock).status()["budget_seconds"] == 600 + 1800
+    config = Config(data_dir=tmp_path, seed_daily_minutes=120, seed_session_gap_minutes=20)
+    ledger = Ledger(config, clock)
+    assert ledger.settings() == {"daily_minutes": 120, "session_gap_minutes": 20}
+    assert ledger.pending_changes() == []
+    assert ledger.search_watched()[0]["watched_seconds"] == 4200
 
-
-def test_unlock_refused_while_budget_remains(ledger):
-    ledger.charge("v", 0, 300, "t", "c")
-    assert ledger.status()["budget_spent"] is False
-    with pytest.raises(LedgerError):
-        ledger.start_unlock()
-    ledger.charge("v", 300, 600, "t", "c")
-    assert ledger.status()["budget_spent"] is True
-    ledger.start_unlock()
-
-
-def test_unlocks_are_limited_per_day_and_cannot_overlap(ledger, clock):
-    ledger.charge("v", 0, 600, "t", "c")
-    ledger.start_unlock()
-    with pytest.raises(LedgerError):  # Still waiting.
-        ledger.start_unlock()
-    clock.now += 61
-    with pytest.raises(LedgerError):  # Its minutes haven't been used.
-        ledger.start_unlock()
-    ledger.charge("v", 600, 600 + 30 * 60, "t", "c")
-    ledger.start_unlock()
-    clock.now += 61
-    ledger.charge("v", 600 + 30 * 60, 600 + 60 * 60, "t", "c")
-    with pytest.raises(LedgerError):  # Both used.
-        ledger.start_unlock()
+    # It only happens once: later choices go through cooling-off as usual.
+    ledger.change_settings({"daily_minutes": 30})
+    assert Ledger(config, clock).settings()["daily_minutes"] == 30
 
 
 # ---- cooling off ----
@@ -191,9 +291,9 @@ def test_loosening_waits_72_hours(ledger, clock):
     assert ledger.pending_changes() == []
 
 
-def test_shorter_unlock_wait_counts_as_loosening(ledger):
-    assert ledger.change_settings({"unlock_wait_seconds": 0})["queued"] == ["unlock_wait_seconds"]
-    assert ledger.change_settings({"unlock_wait_seconds": 120})["applied"] == ["unlock_wait_seconds"]
+def test_shorter_gap_counts_as_loosening(ledger):
+    assert ledger.change_settings({"session_gap_minutes": 0})["queued"] == ["session_gap_minutes"]
+    assert ledger.change_settings({"session_gap_minutes": 60})["applied"] == ["session_gap_minutes"]
 
 
 def test_changing_a_queued_value_restarts_the_clock(ledger, clock):
@@ -496,7 +596,46 @@ def client(config, ledger):
         yield c
 
 
+def start_session(client, videos=3):
+    assert client.post("/api/session", json={"videos": videos}).status_code == 200
+
+
+def test_routes_need_a_session(client):
+    base = "/media/abcdefghijk"
+    for path in (
+        f"{base}/299/seg/0.m4s",
+        f"{base}/master.m3u8",
+        "/api/video/abcdefghijk",
+        "/api/video/abcdefghijk/comments",
+        "/api/search?q=x",
+        "/api/channel/@someone",
+    ):
+        refused = client.get(path)
+        assert refused.status_code == 402, path
+        assert refused.json()["error"] == "no_session"
+    assert client.post("/api/playlists/import", json={"url": "u"}).status_code == 402
+    assert client.fake.opened == 0
+
+
+def test_session_route_rejects_what_the_rules_refuse(client):
+    assert client.post("/api/session", json={"videos": 9}).status_code == 409
+    start_session(client)
+    assert client.post("/api/session", json={"videos": 1}).status_code == 409
+    assert client.get("/api/status").json()["session"]["videos_left"] == 3
+
+
+def test_browsing_closes_with_the_last_video_but_it_keeps_playing(client, ledger, clock):
+    start_session(client, 1)
+    ledger.charge("abcdefghijk", 0, 1, "t", "c")
+    clock.now += 30
+    ledger.charge("abcdefghijk", 1, 2, "t", "c")
+    assert client.get("/api/search", params={"q": "x"}).json()["error"] == "no_session"
+    assert client.get("/api/video/abcdefghijj").status_code == 402
+    assert client.get("/api/video/abcdefghijk").status_code == 200
+
+
 def test_server_stops_delivering_when_budget_is_gone(client):
+    start_session(client)
     base = "/media/abcdefghijk/299/seg"
     assert client.get(f"{base}/0.m4s").status_code == 200
     assert client.get(f"{base}/1.m4s").status_code == 200  # Crosses 10 minutes.
@@ -510,12 +649,14 @@ def test_server_stops_delivering_when_budget_is_gone(client):
 
 
 def test_second_track_does_not_double_charge(client):
+    start_session(client)
     client.get("/media/abcdefghijk/299/seg/0.m4s")
     client.get("/media/abcdefghijk/140/seg/0.m4s")
     assert client.get("/api/status").json()["used_seconds"] == 300
 
 
 def test_comments_close_with_the_budget(client):
+    start_session(client)
     client.get("/media/abcdefghijk/299/seg/0.m4s")
     client.get("/media/abcdefghijk/299/seg/1.m4s")
     assert client.get("/api/video/abcdefghijk/comments").status_code == 402
@@ -553,6 +694,7 @@ def test_channel_route_gives_the_next_offset(client):
         return "Chan", [], offset == 0
 
     client.fake.channel = channel
+    start_session(client)
     assert client.get("/api/channel/@someone").json()["next_offset"] == 30
     assert client.get("/api/channel/@someone?offset=30").json()["next_offset"] is None
     assert calls == [0, 30]
@@ -616,6 +758,7 @@ def test_the_apps_own_paths_are_left_alone(client):
 
 
 def test_master_playlist_route(client):
+    start_session(client)
     text = client.get("/media/abcdefghijk/master.m3u8").text
     assert "299/index.m3u8" in text and 'URI="140/index.m3u8"' in text
     assert "1920x1080" in text

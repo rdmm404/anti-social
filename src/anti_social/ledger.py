@@ -5,8 +5,12 @@ Time is charged for media the server delivers, not for what a client reports:
 - each second of a video is charged once per budget day, so audio and video
   tracks, quality switches, reloads and a second device never double-charge.
 
-An unlock tops up the day's budget instead of starting a countdown, so pausing
-doesn't waste it and a faster playback speed doesn't stretch it.
+Watching happens in sessions. A session is a number of videos chosen before
+browsing, because the decision is easier to keep when it's made before anything
+tempting is on screen. A video takes up a slot once it has been delivered for
+SAMPLE_SECONDS, so backing out of a wrong click is free, a few times per session.
+The next session opens a while after the last delivery, which is what stops one
+session running straight into another.
 
 Any later platform can spend from the same budget by calling `charge`.
 """
@@ -26,10 +30,17 @@ Interval = list[float]
 # setting -> (minimum, maximum, whether a higher value is looser)
 SETTINGS: dict[str, tuple[int, int, bool]] = {
     "daily_minutes": (0, 1440, True),
-    "unlocks_per_day": (0, 10, True),
-    "unlock_minutes": (1, 240, True),
-    "unlock_wait_seconds": (0, 3600, False),
+    "session_gap_minutes": (0, 1440, False),
 }
+
+MAX_SESSION_VIDEOS = 3
+SAMPLES_PER_SESSION = 3
+# Measured in wall-clock time from first to last delivery, because delivery runs ahead of
+# the playhead by a buffer: counting delivered seconds would charge for what wasn't seen.
+SAMPLE_SECONDS = 30
+# Longer than this with nothing delivered and the session's unused videos are gone, so
+# a session opened at lunch can't skip the question in the evening.
+SESSION_IDLE_SECONDS = 30 * 60
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
@@ -51,11 +62,18 @@ CREATE TABLE IF NOT EXISTS watched (
     last_at REAL NOT NULL,
     PRIMARY KEY (day, video_id)
 );
-CREATE TABLE IF NOT EXISTS unlocks (
+CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY,
     day TEXT NOT NULL,
-    starts_at REAL NOT NULL,
-    seconds REAL NOT NULL
+    videos INTEGER NOT NULL,
+    started_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_videos (
+    session_id INTEGER NOT NULL,
+    video_id TEXT NOT NULL,
+    first_at REAL NOT NULL,
+    last_at REAL NOT NULL,
+    PRIMARY KEY (session_id, video_id)
 );
 CREATE TABLE IF NOT EXISTS subscriptions (
     channel_id TEXT PRIMARY KEY,
@@ -102,27 +120,40 @@ class Ledger:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
-        self._migrate_unlocks()
+        self._retire_unlocks()
         seeds = {
             "daily_minutes": config.seed_daily_minutes,
-            "unlocks_per_day": config.seed_unlocks_per_day,
-            "unlock_minutes": config.seed_unlock_minutes,
-            "unlock_wait_seconds": config.seed_unlock_wait_seconds,
+            "session_gap_minutes": config.seed_session_gap_minutes,
         }
         with self._db:
             self._db.executemany(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", seeds.items()
             )
 
-    def _migrate_unlocks(self) -> None:
-        """Unlocks used to be a time window. The window's length is the top-up it was worth."""
-        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(unlocks)")}
-        if "ends_at" not in columns:
+    def _retire_unlocks(self) -> None:
+        """Runs once, on a database from before sessions.
+
+        The cap moves to its new seed here rather than through cooling-off: it replaces
+        the unlocks being removed, so it isn't a loosening made in the moment.
+        Time already watched on unlocks stays in `watched.unlocked_seconds`.
+        """
+        exists = self._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'unlocks'"
+        ).fetchone()
+        if not exists:
             return
+        known = ",".join("?" * len(SETTINGS))
         with self._db:
-            self._db.execute("ALTER TABLE unlocks ADD COLUMN seconds REAL NOT NULL DEFAULT 0")
-            self._db.execute("UPDATE unlocks SET seconds = ends_at - starts_at")
-            self._db.execute("ALTER TABLE unlocks DROP COLUMN ends_at")
+            self._db.execute("DROP TABLE unlocks")
+            self._db.execute(f"DELETE FROM settings WHERE key NOT IN ({known})", tuple(SETTINGS))
+            self._db.execute(
+                f"DELETE FROM pending_changes WHERE key NOT IN ({known})", tuple(SETTINGS)
+            )
+            seed = self._config.seed_daily_minutes
+            self._db.execute(
+                "UPDATE settings SET value = ? WHERE key = 'daily_minutes' AND value < ?",
+                (seed, seed),
+            )
 
     # ---- budget day ----
 
@@ -210,54 +241,124 @@ class Ledger:
         with self._db:
             self._db.execute("DELETE FROM pending_changes WHERE id = ?", (change_id,))
 
-    # ---- unlocks ----
+    # ---- sessions ----
 
-    def _waiting_unlock_start(self) -> float | None:
-        row = self._db.execute(
-            "SELECT MAX(starts_at) AS starts_at FROM unlocks WHERE starts_at > ?",
-            (self._clock(),),
+    def _current_session(self) -> sqlite3.Row | None:
+        """Today's latest session, unless nothing has been delivered for too long."""
+        session: sqlite3.Row = self._db.execute(
+            "SELECT s.id, s.videos, MAX(s.started_at, COALESCE(MAX(v.last_at), 0)) AS active_at"
+            " FROM sessions s LEFT JOIN session_videos v ON v.session_id = s.id"
+            " WHERE s.id = (SELECT MAX(id) FROM sessions WHERE day = ?)",
+            (self._day(),),
         ).fetchone()
-        starts_at: float | None = row["starts_at"]
-        return starts_at
+        if session["id"] is None or self._clock() - session["active_at"] >= SESSION_IDLE_SECONDS:
+            return None
+        return session
 
-    def _budget_seconds(self) -> float:
-        """The daily budget plus every unlock that has finished its wait."""
+    def _session_counts(self, session_id: int) -> tuple[int, int]:
+        """(videos that have taken up a slot, videos still under the sample limit)."""
         row = self._db.execute(
-            "SELECT COALESCE(SUM(seconds), 0) AS added FROM unlocks WHERE day = ? AND starts_at <= ?",
-            (self._day(), self._clock()),
+            "SELECT COALESCE(SUM(last_at - first_at >= ?), 0) AS kept,"
+            " COALESCE(SUM(last_at - first_at < ?), 0) AS sampled"
+            " FROM session_videos WHERE session_id = ?",
+            (SAMPLE_SECONDS, SAMPLE_SECONDS, session_id),
         ).fetchone()
-        return self.settings()["daily_minutes"] * 60 + float(row["added"])
+        return int(row["kept"]), int(row["sampled"])
 
-    def _unlocks_used(self) -> int:
+    @staticmethod
+    def _slots_used(kept: int, sampled: int) -> int:
+        """Once the free samples are gone, a video takes up a slot as soon as it starts."""
+        return kept + max(0, sampled - SAMPLES_PER_SESSION)
+
+    def _session_has_room(self, session: sqlite3.Row) -> bool:
+        return self._slots_used(*self._session_counts(session["id"])) < int(session["videos"])
+
+    def _kept_in(self, video_id: str) -> int | None:
+        """The session in which this video took up a slot today, if it has."""
         row = self._db.execute(
-            "SELECT COUNT(*) AS n FROM unlocks WHERE day = ?", (self._day(),)
+            "SELECT v.session_id FROM session_videos v JOIN sessions s ON s.id = v.session_id"
+            " WHERE s.day = ? AND v.video_id = ? AND v.last_at - v.first_at >= ?"
+            " ORDER BY v.session_id DESC LIMIT 1",
+            (self._day(), video_id, SAMPLE_SECONDS),
         ).fetchone()
-        return int(row["n"])
+        return int(row["session_id"]) if row else None
 
-    def start_unlock(self) -> dict[str, Any]:
-        settings = self.settings()
-        if self._waiting_unlock_start():
-            raise LedgerError("An unlock is already on its way.")
-        if self._used_seconds() < self._budget_seconds():
-            raise LedgerError("Unlocks open once today's budget runs out.")
-        if self._unlocks_used() >= settings["unlocks_per_day"]:
-            raise LedgerError("No unlocks left today.")
+    def _next_session_at(self) -> float | None:
+        row = self._db.execute("SELECT MAX(last_at) AS last_at FROM session_videos").fetchone()
+        if row["last_at"] is None:
+            return None
+        return float(row["last_at"]) + self.settings()["session_gap_minutes"] * 60
+
+    def _state(self) -> str:
+        if not self.can_watch():
+            return "no_time"
+        session = self._current_session()
+        if session and self._session_has_room(session):
+            return "open"
+        next_at = self._next_session_at()
+        return "gap" if next_at and self._clock() < next_at else "choose"
+
+    def start_session(self, videos: int) -> dict[str, Any]:
+        if not 1 <= videos <= MAX_SESSION_VIDEOS:
+            raise LedgerError(f"A session is 1 to {MAX_SESSION_VIDEOS} videos.")
+        state = self._state()
+        if state == "no_time":
+            raise LedgerError("No time left today.")
+        if state == "open":
+            raise LedgerError("A session is already open.")
+        if state == "gap":
+            raise LedgerError("The next session isn't open yet.")
         with self._db:
             self._db.execute(
-                "INSERT INTO unlocks (day, starts_at, seconds) VALUES (?, ?, ?)",
-                (
-                    self._day(),
-                    self._clock() + settings["unlock_wait_seconds"],
-                    settings["unlock_minutes"] * 60,
-                ),
+                "INSERT INTO sessions (day, videos, started_at) VALUES (?, ?, ?)",
+                (self._day(), videos, self._clock()),
             )
         return self.status()
 
+    def can_browse(self) -> bool:
+        return self._state() == "open"
+
+    def may_open(self, video_id: str) -> bool:
+        """Whether this video can be played from wherever it has got to."""
+        if not self.can_watch():
+            return False
+        # A video that's been kept today resumes without a new slot, so pausing is free.
+        if self._kept_in(video_id) is not None:
+            return True
+        session = self._current_session()
+        if session is None:
+            return False
+        row = self._db.execute(
+            "SELECT first_at FROM session_videos WHERE session_id = ? AND video_id = ?",
+            (session["id"], video_id),
+        ).fetchone()
+        if row is None:
+            return self._session_has_room(session)
+        if self._clock() - row["first_at"] < SAMPLE_SECONDS:
+            return True
+        # This delivery turns a sample into a kept video, so it needs a slot of its own.
+        kept, sampled = self._session_counts(session["id"])
+        return self._slots_used(kept + 1, sampled - 1) <= int(session["videos"])
+
+    def _record_delivery(self, video_id: str) -> None:
+        now = self._clock()
+        session = self._current_session()
+        session_id = self._kept_in(video_id) or (session["id"] if session else None)
+        if session_id is None:
+            return
+        self._db.execute(
+            "INSERT INTO session_videos (session_id, video_id, first_at, last_at)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (session_id, video_id) DO UPDATE SET last_at = excluded.last_at",
+            (session_id, video_id, now, now),
+        )
+
     # ---- charging ----
 
-    def _used_seconds(self, column: str = "charged_seconds + unlocked_seconds") -> float:
+    def _used_seconds(self) -> float:
         row = self._db.execute(
-            f"SELECT COALESCE(SUM({column}), 0) AS used FROM watched WHERE day = ?",
+            "SELECT COALESCE(SUM(charged_seconds + unlocked_seconds), 0) AS used"
+            " FROM watched WHERE day = ?",
             (self._day(),),
         ).fetchone()
         return float(row["used"])
@@ -273,32 +374,26 @@ class Ledger:
         return intervals
 
     def can_watch(self) -> bool:
-        return self._used_seconds() < self._budget_seconds()
+        return self._used_seconds() < self.settings()["daily_minutes"] * 60
 
     def may_deliver(self, video_id: str, start: float, end: float) -> bool:
-        """Media already paid for today stays available even after time runs out."""
-        if self.can_watch():
-            return True
+        """Media already paid for today stays available whatever else has happened."""
         new, _ = add_interval(self._intervals(video_id), start, end)
-        return new <= 0
+        return new <= 0 or self.may_open(video_id)
 
     def charge(self, video_id: str, start: float, end: float, title: str, channel: str) -> float:
         """Record delivered media and return the seconds that were new today."""
         new, merged = add_interval(self._intervals(video_id), start, end)
         if new <= 0:
             return 0.0
-        # The daily budget pays first. Whatever it can't cover came from an unlock.
-        daily_left = self.settings()["daily_minutes"] * 60 - self._used_seconds("charged_seconds")
-        charged = min(new, max(0.0, daily_left))
         with self._db:
             self._db.execute(
                 "INSERT INTO watched"
-                " (day, video_id, title, channel, intervals, charged_seconds, unlocked_seconds, last_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                " (day, video_id, title, channel, intervals, charged_seconds, last_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT (day, video_id) DO UPDATE SET"
                 " intervals = excluded.intervals,"
                 " charged_seconds = charged_seconds + excluded.charged_seconds,"
-                " unlocked_seconds = unlocked_seconds + excluded.unlocked_seconds,"
                 " last_at = excluded.last_at",
                 (
                     self._day(),
@@ -306,30 +401,37 @@ class Ledger:
                     title,
                     channel,
                     json.dumps(merged),
-                    charged,
-                    new - charged,
+                    new,
                     self._clock(),
                 ),
             )
+            self._record_delivery(video_id)
         return new
 
     # ---- reading state ----
 
     def status(self) -> dict[str, Any]:
-        settings = self.settings()
-        budget = self._budget_seconds()
+        budget = self.settings()["daily_minutes"] * 60
         used = self._used_seconds()
+        session = self._current_session()
+        details = None
+        if session:
+            kept, sampled = self._session_counts(session["id"])
+            details = {
+                "videos_left": max(0, session["videos"] - self._slots_used(kept, sampled)),
+                "samples_left": max(0, SAMPLES_PER_SESSION - sampled),
+            }
         return {
             "budget_seconds": budget,
             "used_seconds": round(used),
             "remaining_seconds": max(0, round(budget - used)),
             "can_watch": used < budget,
             "resets_at": self._resets_at(),
-            "unlocks_left": max(0, settings["unlocks_per_day"] - self._unlocks_used()),
-            "budget_spent": used >= budget,
-            "unlock_minutes": settings["unlock_minutes"],
-            "unlock_wait_seconds": settings["unlock_wait_seconds"],
-            "unlock_starts_at": self._waiting_unlock_start(),
+            "state": self._state(),
+            "session": details,
+            "next_session_at": self._next_session_at(),
+            "session_choices": list(range(1, MAX_SESSION_VIDEOS + 1)),
+            "sample_seconds": SAMPLE_SECONDS,
             "now": self._clock(),
         }
 
@@ -339,16 +441,14 @@ class Ledger:
         for offset in range(days):
             day = (today - timedelta(days=offset)).date().isoformat()
             row = self._db.execute(
-                "SELECT COALESCE(SUM(charged_seconds), 0) AS charged,"
-                " COALESCE(SUM(unlocked_seconds), 0) AS unlocked FROM watched WHERE day = ?",
+                "SELECT COALESCE(SUM(charged_seconds + unlocked_seconds), 0) AS watched"
+                " FROM watched WHERE day = ?",
                 (day,),
             ).fetchone()
-            totals.append(
-                {"day": day, "charged_seconds": round(row["charged"]), "unlocked_seconds": round(row["unlocked"])}
-            )
+            totals.append({"day": day, "watched_seconds": round(row["watched"])})
         videos = self._db.execute(
-            "SELECT video_id, title, channel, charged_seconds, unlocked_seconds FROM watched"
-            " WHERE day = ? ORDER BY last_at DESC",
+            "SELECT video_id, title, channel, charged_seconds + unlocked_seconds AS watched_seconds"
+            " FROM watched WHERE day = ? ORDER BY last_at DESC",
             (self._day(),),
         ).fetchall()
         return {"days": totals, "today": [dict(v) for v in videos]}
@@ -375,8 +475,8 @@ class Ledger:
             where.append("day <= ?")
             params.append(end_day)
         rows = self._db.execute(
-            "SELECT day, video_id, title, channel, charged_seconds, unlocked_seconds FROM watched"
-            f" WHERE {' AND '.join(where)} ORDER BY day DESC, last_at DESC LIMIT ? OFFSET ?",
+            "SELECT day, video_id, title, channel, charged_seconds + unlocked_seconds AS watched_seconds"
+            f" FROM watched WHERE {' AND '.join(where)} ORDER BY day DESC, last_at DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
         return [dict(r) for r in rows]
