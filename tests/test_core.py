@@ -1,6 +1,8 @@
 import asyncio
+import datetime
 import sqlite3
 import struct
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -13,6 +15,7 @@ from anti_social.config import Config
 from anti_social.ledger import Ledger, LedgerError, add_interval
 from anti_social.main import create_app
 from anti_social.playlists import Playlists
+from anti_social.schedule import Schedule
 from anti_social.media import SegmentIndex, Segment, Track, locate_sidx, media_playlist, parse_index
 from anti_social.youtube import (
     Stream,
@@ -30,8 +33,6 @@ HOUR = 3600
 class Clock:
     # Noon local time on an arbitrary day, so tests sit far from the 4am rollover.
     def __init__(self):
-        import datetime
-
         self.now = datetime.datetime(2026, 6, 15, 12).timestamp()
 
     def __call__(self):
@@ -519,6 +520,100 @@ def test_comments_close_with_the_budget(client):
     client.get("/media/abcdefghijk/299/seg/0.m4s")
     client.get("/media/abcdefghijk/299/seg/1.m4s")
     assert client.get("/api/video/abcdefghijk/comments").status_code == 402
+
+
+# ---- blocked hours ----
+
+
+def at(hour, minute=0, day=15):
+    # 2026-06-15 is a Monday.
+    return datetime.datetime(2026, 6, day, hour, minute)
+
+
+def test_schedule_handles_days_and_midnight():
+    schedule = Schedule.parse("mon-fri 09:00-17:00; sat,sun 22:00-07:00")
+    assert schedule.blocked_until(at(8, 59)) is None
+    assert schedule.blocked_until(at(9)) == at(17)
+    assert schedule.blocked_until(at(17)) is None
+    assert schedule.blocked_until(at(12, day=20)) is None  # Saturday noon.
+    assert schedule.blocked_until(at(23, day=20)) == at(7, day=21)
+    assert schedule.blocked_until(at(6, day=22)) == at(7, day=22)  # Sunday night's window.
+    assert schedule.blocked_until(at(23, day=22)) is None  # Monday night has no window.
+
+
+def test_schedule_follows_windows_that_run_together():
+    schedule = Schedule.parse("mon 22:00-24:00; tue 00:00-07:00; tue 06:00-08:00")
+    assert schedule.blocked_until(at(23)) == at(8, day=16)
+
+
+def test_schedule_covering_everything_still_answers():
+    until = Schedule.parse("00:00-24:00").blocked_until(at(12))
+    assert until is not None and until >= at(12, day=22)
+
+
+def test_no_schedule_never_blocks():
+    assert Schedule.parse(" ").blocked_until(at(12)) is None
+
+
+@pytest.mark.parametrize(
+    "text", ["sometimes", "25:00-26:00", "09:60-10:00", "09:00-09:00", "funday 09:00-10:00", "09:00"]
+)
+def test_unreadable_schedule_refuses_to_start(text):
+    with pytest.raises(ValueError):
+        Schedule.parse(text)
+
+
+@pytest.fixture
+def blocked_config(config):
+    # The clock starts at Monday noon, so this is blocked for the next hour.
+    return replace(config, blocked=Schedule.parse("mon 12:00-13:00"))
+
+
+def test_block_overrides_budget_unlocks_and_paid_media(blocked_config, clock):
+    ledger = Ledger(blocked_config, clock)
+    clock.now -= HOUR
+    ledger.charge("v", 0, 600, "t", "c")  # Spends the budget and pays for this media.
+    clock.now += HOUR
+
+    status = ledger.status()
+    assert status["can_watch"] is False
+    assert status["blocked_until"] == clock.now + HOUR
+    assert not ledger.may_deliver("v", 0, 10)
+    with pytest.raises(LedgerError):
+        ledger.start_unlock()
+
+    clock.now += HOUR
+    assert ledger.status()["blocked_until"] is None
+    assert ledger.may_deliver("v", 0, 10)
+    ledger.start_unlock()
+
+
+def test_block_ending_leaves_the_budget_untouched(blocked_config, clock):
+    ledger = Ledger(blocked_config, clock)
+    assert not ledger.can_watch()
+    clock.now += HOUR
+    assert ledger.can_watch()
+    assert ledger.status()["remaining_seconds"] == 600
+
+
+def test_server_delivers_nothing_during_a_block(blocked_config, clock):
+    fake = FakeYouTube()
+    app = create_app(blocked_config, Ledger(blocked_config, clock), cast(YouTube, fake))
+    with TestClient(app) as blocked_client:
+        segment = blocked_client.get("/media/abcdefghijk/299/seg/0.m4s")
+        assert segment.status_code == 402
+        assert segment.json()["error"] == "blocked"
+        assert fake.opened == 0
+        for path in (
+            "/api/search?q=x",
+            "/api/channel/UCx",
+            "/api/video/abcdefghijk",
+            "/api/video/abcdefghijk/comments",
+            "/media/abcdefghijk/master.m3u8",
+        ):
+            assert blocked_client.get(path).status_code == 402, path
+        assert blocked_client.post("/api/unlock").status_code == 409
+        assert blocked_client.get("/api/settings").json()["blocked_schedule"] == "mon 12:00-13:00"
 
 
 # ---- channels ----

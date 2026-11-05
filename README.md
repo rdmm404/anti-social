@@ -39,6 +39,7 @@ it daily.
 | `ANTI_SOCIAL_YTDLP_UPDATE` | none | Command run daily to update yt-dlp. The Docker image sets this. |
 | `ANTI_SOCIAL_DAY_START` | `4` | Local hour when the daily budget resets |
 | `ANTI_SOCIAL_COOLING_OFF_HOURS` | `72` | Wait before a looser limit applies |
+| `ANTI_SOCIAL_BLOCKED` | none | Hours when watching is off, such as `mon-fri 09:00-17:00; 22:00-07:00`. See [blocked hours](#blocked-hours). |
 | `ANTI_SOCIAL_DAILY_MINUTES` | `60` | First-run seed only |
 | `ANTI_SOCIAL_UNLOCKS_PER_DAY` | `2` | First-run seed only |
 | `ANTI_SOCIAL_UNLOCK_MINUTES` | `30` | First-run seed only |
@@ -58,6 +59,25 @@ it daily.
   use them.
 - Tighter limits apply immediately. Looser ones wait out the cooling-off period and can be
   cancelled. Saving a different value restarts the wait.
+
+## Blocked hours
+
+`ANTI_SOCIAL_BLOCKED` lists windows separated by semicolons, in the server's time zone.
+Days are optional and can be ranges or lists, such as `mon-fri` or `sat,sun`. A window that
+ends before it starts runs past midnight, and belongs to the day it starts on. A value the
+server can't read stops it from starting, rather than leaving you unblocked.
+
+During a window search, channels, video and comments all return `402`, whatever budget is
+left. Unlocks are refused, and media already paid for today stops too. Anything already
+buffered in the player can still finish, which is about 20 seconds. Your history, playlists
+and thumbnails stay available.
+
+The schedule isn't editable from the app, so lifting it means changing the variable and
+redeploying. With Docker, put it in a `.env` file next to the compose file.
+
+The Fire TV app is blocked too, because the server enforces this. It doesn't know about
+blocked hours yet, though: it says there's no time left, still offers unlocks that get
+refused, and resumes playing by itself when a window ends.
 
 ## Opening YouTube links
 
@@ -114,6 +134,7 @@ one, has to be uninstalled first.
 | File | Responsibility |
 | --- | --- |
 | `ledger.py` | Budget, unlocks, cooling-off, subscriptions. Knows nothing about YouTube, so other platforms can share the budget. |
+| `schedule.py` | Parses blocked hours and says when they end |
 | `youtube.py` | All yt-dlp and YouTube knowledge |
 | `media.py` | Parses `sidx` indexes and writes HLS playlists |
 | `playlists.py` | Saved video lists |

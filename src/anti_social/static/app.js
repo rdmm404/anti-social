@@ -107,7 +107,10 @@ async function refreshStatus() {
 function renderClock() {
   const s = status;
   clock.className = 'clock';
-  if (unlockWaiting(s)) {
+  if (s.blocked_until) {
+    clock.classList.add('out');
+    clock.textContent = `blocked until ${timeOfDay(s.blocked_until)}`;
+  } else if (unlockWaiting(s)) {
     clock.textContent = `unlock in ${Math.ceil(s.unlock_starts_at - s.now)}s`;
   } else if (!s.can_watch) {
     clock.classList.add('out');
@@ -123,7 +126,9 @@ function unlockControl() {
   const draw = () => {
     box.replaceChildren();
     const s = status;
-    if (unlockWaiting(s)) {
+    if (s.blocked_until) {
+      // Nothing opens a block early, so there's nothing to offer.
+    } else if (unlockWaiting(s)) {
       box.append(h('p', {}, `Adding ${s.unlock_minutes} min in ${Math.ceil(s.unlock_starts_at - s.now)}s.`));
     } else if (!s.budget_spent) {
       // Unlocks only open once the budget is gone, so there's nothing to offer yet.
@@ -156,12 +161,18 @@ function unlockControl() {
 
 function outOfTimePanel() {
   const control = unlockControl();
-  const panel = h('section', { class: 'panel stack' },
-    h('h2', {}, 'No time left today'),
-    h('p', { class: 'muted' }, `Your budget resets at ${timeOfDay(status.resets_at)}.`),
-    control,
-  );
-  panel.redraw = control.redraw;
+  const heading = h('h2');
+  const note = h('p', { class: 'muted' });
+  const panel = h('section', { class: 'panel stack' }, heading, note, control);
+  panel.redraw = () => {
+    const until = status.blocked_until;
+    heading.textContent = until ? 'Blocked right now' : 'No time left today';
+    note.textContent = until
+      ? `This opens again at ${timeOfDay(until)}.`
+      : `Your budget resets at ${timeOfDay(status.resets_at)}.`;
+    control.redraw();
+  };
+  panel.redraw();
   return panel;
 }
 
@@ -484,6 +495,8 @@ function drawSettings(container) {
     const inputs = {};
     const note = h('p', { role: 'status', class: 'muted' },
       `Tighter limits apply now. Looser limits wait ${data.cooling_off_hours} hours.`);
+    const schedule = data.blocked_schedule
+      && h('p', { class: 'muted' }, `Always blocked: ${data.blocked_schedule}. This is set on the server.`);
     const fields = FIELDS.map(([key, label]) => {
       const pending = data.pending.find((p) => p.key === key);
       inputs[key] = h('input', {
@@ -504,6 +517,7 @@ function drawSettings(container) {
           },
         })));
     fill(container,
+      schedule,
       h('form', {
         class: 'panel stack',
         onsubmit: async (event) => {
@@ -563,9 +577,18 @@ function watchPage(id, listId, startAt) {
       if (error.code === 402) {
         const panel = outOfTimePanel();
         body.replaceChildren(panel);
+        let waitedOutBlock = Boolean(status.blocked_until);
         onStatus = (s) => {
-          if (s.can_watch) route();
-          else panel.redraw();
+          if (!s.can_watch) {
+            waitedOutBlock ||= Boolean(s.blocked_until);
+            panel.redraw();
+          } else if (waitedOutBlock) {
+            // A block can end with nobody around, so opening the video is left to them.
+            onStatus = () => {};
+            body.replaceChildren(h('div', {}, h('button', { class: 'primary', onclick: route }, 'Watch')));
+          } else {
+            route();
+          }
         };
       } else {
         body.replaceChildren(failure(error));
@@ -817,6 +840,7 @@ function buildPlayer(body, video, subscriptions, listId, startAt) {
     blocked = true;
     const panel = outOfTimePanel();
     notice.replaceChildren(panel);
+    let waitedOutBlock = Boolean(status.blocked_until);
     statusHandler = (s) => {
       if (s.can_watch) {
         blocked = false;
@@ -824,8 +848,10 @@ function buildPlayer(body, video, subscriptions, listId, startAt) {
         statusHandler = () => {};
         onStatus = statusHandler;
         const resumeAt = el.currentTime;
-        load(resumeAt, true);
+        // A block can end with nobody around, so it comes back paused.
+        load(resumeAt, !waitedOutBlock);
       } else {
+        waitedOutBlock ||= Boolean(s.blocked_until);
         panel.redraw();
       }
     };

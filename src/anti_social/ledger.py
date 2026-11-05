@@ -135,6 +135,13 @@ class Ledger:
         today = datetime.fromisoformat(self._day())
         return (today + timedelta(days=1, hours=self._config.day_start_hour)).timestamp()
 
+    # ---- blocked hours ----
+
+    def blocked_until(self) -> float | None:
+        """Overrides everything: remaining budget, unlocks and media already paid for."""
+        until = self._config.blocked.blocked_until(datetime.fromtimestamp(self._clock()))
+        return until.timestamp() if until else None
+
     # ---- settings ----
 
     def _apply_due_changes(self) -> None:
@@ -236,6 +243,8 @@ class Ledger:
 
     def start_unlock(self) -> dict[str, Any]:
         settings = self.settings()
+        if self.blocked_until():
+            raise LedgerError("Unlocks don't apply during blocked hours.")
         if self._waiting_unlock_start():
             raise LedgerError("An unlock is already on its way.")
         if self._used_seconds() < self._budget_seconds():
@@ -272,12 +281,17 @@ class Ledger:
         intervals: list[Interval] = json.loads(row["intervals"])
         return intervals
 
-    def can_watch(self) -> bool:
+    def _has_time(self) -> bool:
         return self._used_seconds() < self._budget_seconds()
 
+    def can_watch(self) -> bool:
+        return not self.blocked_until() and self._has_time()
+
     def may_deliver(self, video_id: str, start: float, end: float) -> bool:
-        """Media already paid for today stays available even after time runs out."""
-        if self.can_watch():
+        """Media already paid for today stays available after time runs out, but not when blocked."""
+        if self.blocked_until():
+            return False
+        if self._has_time():
             return True
         new, _ = add_interval(self._intervals(video_id), start, end)
         return new <= 0
@@ -319,11 +333,13 @@ class Ledger:
         settings = self.settings()
         budget = self._budget_seconds()
         used = self._used_seconds()
+        blocked_until = self.blocked_until()
         return {
             "budget_seconds": budget,
             "used_seconds": round(used),
             "remaining_seconds": max(0, round(budget - used)),
-            "can_watch": used < budget,
+            "can_watch": used < budget and not blocked_until,
+            "blocked_until": blocked_until,
             "resets_at": self._resets_at(),
             "unlocks_left": max(0, settings["unlocks_per_day"] - self._unlocks_used()),
             "budget_spent": used >= budget,
