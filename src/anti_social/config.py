@@ -8,6 +8,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .schedule import Schedule
+
 
 def _int(name: str, default: int) -> int:
     return int(os.environ.get(name, default))
@@ -36,6 +38,11 @@ class Config:
     day_start_hour: int = field(default_factory=lambda: _int("ANTI_SOCIAL_DAY_START", 4))
     cooling_off_hours: int = field(
         default_factory=lambda: _int("ANTI_SOCIAL_COOLING_OFF_HOURS", 72)
+    )
+    # When watching is off no matter what. Here and not in the app, so that
+    # lifting it takes a redeploy instead of a tap.
+    blocked: Schedule = field(
+        default_factory=lambda: Schedule.parse(os.environ.get("ANTI_SOCIAL_BLOCKED", ""))
     )
     # First-run seeds. Ignored once the database exists.
     seed_daily_minutes: int = field(

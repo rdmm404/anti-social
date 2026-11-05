@@ -6,6 +6,7 @@ services:
     user: "1000:1000"
     environment:
       TZ: "${TZ:-America/Toronto}"
+      ANTI_SOCIAL_BLOCKED: "${ANTI_SOCIAL_BLOCKED:-}"
     volumes:
       - ./data:/data
     networks:

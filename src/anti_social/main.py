@@ -44,6 +44,7 @@ YTDLP_UPDATE_INTERVAL = 24 * 3600
 DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 NO_STORE = {"Cache-Control": "no-store"}
 OUT_OF_TIME = {"error": "out_of_time", "message": "You're out of time for today."}
+BLOCKED = {"error": "blocked", "message": "This is blocked right now."}
 
 
 class SettingsChange(BaseModel):
@@ -135,10 +136,12 @@ def create_app(
             return RedirectResponse(f"/{route}", status_code=302)
         return JSONResponse({"detail": exc.detail}, status_code=404)
 
+    def closed() -> JSONResponse:
+        body = BLOCKED if app.state.ledger.blocked_until() else OUT_OF_TIME
+        return JSONResponse(body, status_code=402, headers=NO_STORE)
+
     def require_time() -> JSONResponse | None:
-        if app.state.ledger.can_watch():
-            return None
-        return JSONResponse(OUT_OF_TIME, status_code=402, headers=NO_STORE)
+        return None if app.state.ledger.can_watch() else closed()
 
     def present(listings: list[Listing]) -> list[dict[str, Any]]:
         return [
@@ -169,6 +172,7 @@ def create_app(
             "settings": ledger.settings(),
             "pending": ledger.pending_changes(),
             "cooling_off_hours": config.cooling_off_hours,
+            "blocked_schedule": config.blocked.text,
         }
 
     @app.post("/api/settings")
@@ -364,7 +368,7 @@ def create_app(
             raise HTTPException(404)
         segment = index.segments[number]
         if not ledger.may_deliver(video_id, segment.start_time, segment.end_time):
-            return JSONResponse(OUT_OF_TIME, status_code=402, headers=NO_STORE)
+            return closed()
 
         upstream = await youtube.open_range(
             video_id, format_id, segment.start_byte, segment.end_byte
