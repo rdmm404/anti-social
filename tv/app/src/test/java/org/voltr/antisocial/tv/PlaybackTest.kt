@@ -33,7 +33,7 @@ class PlaybackTest {
     )
 
     private fun retryDelay(error: IOException): Long =
-        OutOfTimeAwareErrorPolicy().getRetryDelayMsFor(
+        RefusalAwareErrorPolicy().getRetryDelayMsFor(
             LoadErrorHandlingPolicy.LoadErrorInfo(
                 LoadEventInfo(0, DataSpec.Builder().setUri(Uri.EMPTY).build(), 0),
                 MediaLoadData(C.DATA_TYPE_MEDIA),
@@ -43,15 +43,15 @@ class PlaybackTest {
         )
 
     @Test
-    fun `a 402 anywhere in the cause chain means out of time`() {
-        assertTrue(refused(402).isOutOfTime())
-        assertTrue(RuntimeException("wrapped", refused(402)).isOutOfTime())
+    fun `a 402 anywhere in the cause chain is a refusal`() {
+        assertTrue(refused(402).isRefused())
+        assertTrue(RuntimeException("wrapped", refused(402)).isRefused())
     }
 
     @Test
     fun `other failures don't`() {
-        assertFalse(refused(403).isOutOfTime())
-        assertFalse(IOException("network").isOutOfTime())
+        assertFalse(refused(403).isRefused())
+        assertFalse(IOException("network").isRefused())
     }
 
     @Test

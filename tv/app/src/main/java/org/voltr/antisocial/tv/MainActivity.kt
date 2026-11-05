@@ -6,6 +6,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -59,14 +60,15 @@ class Entry(val route: Route) {
     var focusIndex = 0
 }
 
-/** Budget state, kept fresh from the server for every screen. */
+/** Session and budget state, kept fresh from the server for every screen. */
 class Budget(private val api: Api, private val scope: CoroutineScope) {
     var status by mutableStateOf<Status?>(null)
         private set
     var serverDown by mutableStateOf(false)
         private set
-    var unlockError by mutableStateOf<String?>(null)
+    var sessionError by mutableStateOf<String?>(null)
         private set
+    private var starting = false
 
     suspend fun refresh() {
         try {
@@ -77,15 +79,18 @@ class Budget(private val api: Api, private val scope: CoroutineScope) {
         }
     }
 
-    fun unlock() {
+    fun startSession(videos: Int) {
+        if (starting) return
+        starting = true
         scope.launch {
-            unlockError = try {
-                api.unlock()
+            sessionError = try {
+                api.startSession(videos)
                 null
             } catch (e: ApiError) {
                 e.message
             }
             refresh()
+            starting = false
         }
     }
 }
@@ -116,6 +121,7 @@ private fun App(api: Api) {
     }
     // The home search box sends Up here; left to geometry, its width lands on the wrong tab.
     val searchTab = remember { FocusRequester() }
+    val firstChoice = remember { FocusRequester() }
     val entry = stack.last()
     BackHandler(enabled = stack.size > 1) { stack.removeAt(stack.lastIndex) }
 
@@ -138,18 +144,39 @@ private fun App(api: Api) {
         } else {
             Column(Modifier.fillMaxSize()) {
                 // Outside key(entry): recreating the bar would drop focus from the tab just pressed.
-                TopBar(route, budget, searchTab, openSection)
+                val gated = route != Route.History && budget.status?.state.let { it != null && it != SessionState.OPEN }
+                TopBar(
+                    route,
+                    budget,
+                    searchTab,
+                    // Left to geometry, Down lands on the biggest choice.
+                    below = if (gated && budget.status?.state == SessionState.CHOOSE) firstChoice else FocusRequester.Default,
+                    openSection,
+                )
                 Box(Modifier.fillMaxSize().padding(horizontal = Unit5 * 8)) {
-                    androidx.compose.runtime.key(entry) {
-                        when (route) {
-                            Route.Search -> HomeScreen(budget, searchTab, open)
-                            is Route.SearchResults -> SearchResultsScreen(api, budget, entry, route.query, open)
-                            Route.Channels -> ChannelsScreen(api, budget, entry, open)
-                            is Route.Channel -> ChannelScreen(api, budget, entry, route.id, open)
-                            Route.Playlists -> PlaylistsScreen(api, budget, entry, open)
-                            is Route.PlaylistPage -> PlaylistScreen(api, budget, entry, route.id, open)
-                            Route.History -> HistoryScreen(api, budget, entry, open)
-                            is Route.Watch -> Unit
+                    val state = budget.status?.state
+                    if (gated) {
+                        // Browsing only exists inside a session, and the page returns when one opens.
+                        // Outside key(entry) so that pressing a tab doesn't move focus to a choice,
+                        // where a second press would start a session nobody asked for.
+                        SessionGate(budget, Modifier.padding(top = Unit5 * 4), firstChoice)
+                        // The gate has nothing to land on unless it's asking the question.
+                        LaunchedEffect(state) { if (state != SessionState.CHOOSE) searchTab.requestFocus() }
+                    } else if (route == Route.Search && state == null) {
+                        // Nothing yet, rather than a search box that may be about to vanish.
+                        LaunchedEffect(Unit) { searchTab.requestFocus() }
+                    } else {
+                        androidx.compose.runtime.key(entry) {
+                            when (route) {
+                                Route.Search -> HomeScreen(budget, searchTab, open)
+                                is Route.SearchResults -> SearchResultsScreen(api, budget, entry, route.query, open)
+                                Route.Channels -> ChannelsScreen(api, budget, entry, open)
+                                is Route.Channel -> ChannelScreen(api, budget, entry, route.id, open)
+                                Route.Playlists -> PlaylistsScreen(api, budget, entry, open)
+                                is Route.PlaylistPage -> PlaylistScreen(api, budget, entry, route.id, open)
+                                Route.History -> HistoryScreen(api, budget, entry, open)
+                                is Route.Watch -> Unit
+                            }
                         }
                     }
                 }
@@ -159,7 +186,13 @@ private fun App(api: Api) {
 }
 
 @Composable
-private fun TopBar(current: Route, budget: Budget, searchTab: FocusRequester, openSection: (Route) -> Unit) {
+private fun TopBar(
+    current: Route,
+    budget: Budget,
+    searchTab: FocusRequester,
+    below: FocusRequester,
+    openSection: (Route) -> Unit,
+) {
     val active = when (current) {
         Route.Search, is Route.SearchResults -> Route.Search
         Route.Channels, is Route.Channel -> Route.Channels
@@ -174,13 +207,23 @@ private fun TopBar(current: Route, budget: Budget, searchTab: FocusRequester, op
     ) {
         Label("anti-social", Type.strong, maxLines = 1)
         Spacer(Modifier.width(Unit5 * 4))
-        listOf(
+        val tabs = listOf(
             Route.Search to "search",
             Route.Channels to "channels",
             Route.Playlists to "playlists",
             Route.History to "history",
-        ).forEach { (route, name) ->
-            Focusable({ openSection(route) }, if (route == Route.Search) Modifier.focusRequester(searchTab) else Modifier) {
+        )
+        tabs.forEachIndexed { index, (route, name) ->
+            Focusable(
+                { openSection(route) },
+                Modifier
+                    .focusProperties {
+                        down = below
+                        if (index == 0) left = FocusRequester.Cancel
+                        if (index == tabs.lastIndex) right = FocusRequester.Cancel
+                    }
+                    .then(if (route == Route.Search) Modifier.focusRequester(searchTab) else Modifier),
+            ) {
                 Label(
                     name,
                     if (route == active) Type.strong.copy(color = Palette.accent) else Type.muted,

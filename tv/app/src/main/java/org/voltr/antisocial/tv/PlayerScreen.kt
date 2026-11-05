@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -51,6 +52,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 
 private const val SEEK_STEP_MS = 10_000L
 private const val CONTROLS_HIDE_MS = 4_000L
@@ -60,7 +62,7 @@ private const val POSITION_POLL_MS = 500L
 private const val SEEK_SETTLE_MS = 600L
 private val SPEEDS = listOf(1f, 1.25f, 1.5f, 1.75f, 2f)
 
-private enum class Ending { None, Finished, OutOfTime, Failed }
+private enum class Ending { None, Finished, Refused, Failed }
 
 private fun Context.positions() = getSharedPreferences("positions", Context.MODE_PRIVATE)
 
@@ -95,8 +97,9 @@ fun PlayerScreen(
                 ActionButton("Back", onBack)
             }
         }
-        Load.OutOfTime -> Message {
-            OutOfTimePanel(budget, Modifier.widthIn(max = 640.dp))
+        Load.Refused -> Message {
+            SessionGate(budget, Modifier.widthIn(max = 640.dp))
+            BackFromGate(budget, onBack)
         }
         is Load.Ready -> VideoPlayer(api, budget, state.value, route, nextVideo, onBack, onNext)
     }
@@ -166,7 +169,7 @@ private fun VideoPlayer(
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
-                    ending = if (error.isOutOfTime()) Ending.OutOfTime else Ending.Failed
+                    ending = if (error.isRefused()) Ending.Refused else Ending.Failed
                 }
 
                 override fun onTracksChanged(tracks: Tracks) {
@@ -187,15 +190,16 @@ private fun VideoPlayer(
         }
     }
 
-    // Time returned (an unlock's wait ended, or the day reset), so carry on from the same spot.
-    val canWatch = budget.status?.canWatch == true
-    LaunchedEffect(ending, canWatch) {
-        val current = player
-        if (ending == Ending.OutOfTime && canWatch && current != null) {
-            ending = Ending.None
-            current.prepare()
-            current.play()
-        }
+    LaunchedEffect(ending) {
+        if (ending == Ending.Finished) budget.refresh()
+        if (ending != Ending.Refused) return@LaunchedEffect
+        // Refresh first: the status from before the refusal may still say a session is open.
+        budget.refresh()
+        snapshotFlow { budget.status?.state == SessionState.OPEN && player != null }.first { it }
+        // A session opened (or the day reset), so carry on from the same spot.
+        ending = Ending.None
+        player?.prepare()
+        player?.play()
     }
 
     LaunchedEffect(player) {
@@ -300,9 +304,9 @@ private fun VideoPlayer(
         )
 
         when (ending) {
-            Ending.OutOfTime -> Overlay {
-                OutOfTimePanel(budget)
-                BackFromOutOfTime(budget, onBack)
+            Ending.Refused -> Overlay {
+                SessionGate(budget)
+                BackFromGate(budget, onBack)
             }
             Ending.Failed -> Overlay {
                 Label("Playback failed. YouTube may have refused this stream.", Type.problem)
@@ -317,10 +321,13 @@ private fun VideoPlayer(
             }
             // The end of a video is the end. There is no next video unless you pick it.
             Ending.Finished -> Overlay {
+                val status = budget.status
+                val open = status?.state == SessionState.OPEN
                 Label("That was the video.", Type.h2)
+                status?.let { Label(afterVideoText(it), Type.muted) }
                 Row(horizontalArrangement = Arrangement.spacedBy(Unit5 * 2)) {
                     FocusedAction("Back", onBack, primary = true)
-                    if (next != null) {
+                    if (next != null && open) {
                         ActionButton("Next: ${next.title}", { onNext(Route.Watch(next.id, route.listId)) })
                     }
                 }
@@ -386,14 +393,20 @@ private fun applyQuality(player: ExoPlayer, override: TrackSelectionOverride?) {
     player.trackSelectionParameters = builder.build()
 }
 
+private fun afterVideoText(status: Status): String = when (status.state) {
+    SessionState.OPEN -> "${videosText(status.session?.videosLeft ?: 0)} left in this session."
+    SessionState.GAP -> "That's the session. The next one opens at ${status.nextSessionAt?.let(::timeOfDay).orEmpty()}"
+    SessionState.NO_TIME -> "That's all your time today. It resets at ${timeOfDay(status.resetsAt)}"
+    SessionState.CHOOSE -> "That's the session."
+}
+
 @Composable
-private fun BackFromOutOfTime(budget: Budget, onBack: () -> Unit) {
-    val status = budget.status
-    // The panel focuses its unlock button when it has one.
-    if (status == null || status.unlocksLeft == 0 || status.unlockWaitLeft != null) {
-        FocusedAction("Back", onBack)
-    } else {
+private fun BackFromGate(budget: Budget, onBack: () -> Unit) {
+    // The gate focuses its first choice when it's asking the question.
+    if (budget.status?.state == SessionState.CHOOSE) {
         ActionButton("Back", onBack)
+    } else {
+        FocusedAction("Back", onBack)
     }
 }
 

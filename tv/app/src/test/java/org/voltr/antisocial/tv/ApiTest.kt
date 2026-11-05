@@ -6,8 +6,6 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -25,51 +23,66 @@ class ApiTest {
     @After
     fun stop() = server.shutdown()
 
+    private fun statusBody(state: String, session: String = "null", nextAt: String = "null", remaining: Int = 3540) =
+        """{"budget_seconds":3600,"used_seconds":60,"remaining_seconds":$remaining,"can_watch":true,
+        "resets_at":1.5,"state":"$state","session":$session,"next_session_at":$nextAt,
+        "session_choices":[1,2,3],"sample_seconds":30,"now":1.0,"something_new":1}"""
+
     @Test
-    fun `reads the status the server sends today`() = runTest {
-        server.enqueue(
-            MockResponse().setBody(
-                """{"budget_seconds":3600,"used_seconds":60,"remaining_seconds":3540,"can_watch":true,
-                "resets_at":1.5,"unlocks_left":2,"budget_spent":false,"unlock_minutes":30,
-                "unlock_wait_seconds":60,"unlock_starts_at":null,"now":1.0,"something_new":1}""",
-            ),
-        )
+    fun `reads an open session`() = runTest {
+        server.enqueue(MockResponse().setBody(statusBody("open", """{"videos_left":2,"samples_left":3}""")))
         val status = api.status()
-        assertEquals(3540, status.remainingSeconds)
-        assertTrue(status.canWatch)
-        assertNull(status.unlockWaitLeft)
+        assertEquals(SessionState.OPEN, status.state)
+        assertEquals(Session(videosLeft = 2, samplesLeft = 3), status.session)
+        assertEquals(listOf(1, 2, 3), status.sessionChoices)
+        assertEquals(30, status.sampleSeconds)
+        assertEquals("2 videos · 59m", clockText(status))
     }
 
     @Test
-    fun `counts down a waiting unlock`() = runTest {
-        server.enqueue(
-            MockResponse().setBody(
-                """{"budget_seconds":0,"used_seconds":0,"remaining_seconds":0,"can_watch":false,
-                "resets_at":1.5,"unlocks_left":1,"budget_spent":true,"unlock_minutes":30,
-                "unlock_wait_seconds":60,"unlock_starts_at":130.2,"now":100.0}""",
-            ),
-        )
-        assertEquals(31L, api.status().unlockWaitLeft)
+    fun `reads the states with no session`() = runTest {
+        server.enqueue(MockResponse().setBody(statusBody("choose")))
+        assertEquals(SessionState.CHOOSE, api.status().state)
+
+        server.enqueue(MockResponse().setBody(statusBody("no_time", remaining = 0)))
+        assertEquals(SessionState.NO_TIME, api.status().state)
+
+        server.enqueue(MockResponse().setBody(statusBody("gap", """{"videos_left":0,"samples_left":2}""", "9.5")))
+        val gap = api.status()
+        assertEquals(SessionState.GAP, gap.state)
+        assertEquals(9.5, gap.nextSessionAt!!, 0.0)
+        assertEquals("59m left", clockText(gap))
     }
 
     @Test
-    fun `reports out of time as its own error`() = runTest {
-        server.enqueue(
-            MockResponse().setResponseCode(402)
-                .setBody("""{"error":"out_of_time","message":"You're out of time for today."}"""),
-        )
-        val error = runCatching { api.search("cats") }.exceptionOrNull() as ApiError
-        assertTrue(error.outOfTime)
-        assertEquals("You're out of time for today.", error.message)
+    fun `starts a session with the chosen number of videos`() = runTest {
+        server.enqueue(MockResponse().setBody(statusBody("open", """{"videos_left":2,"samples_left":3}""")))
+        api.startSession(2)
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/session", request.path)
+        assertEquals("""{"videos":2}""", request.body.readUtf8())
+        assertEquals("application/json; charset=utf-8", request.getHeader("Content-Type"))
     }
 
     @Test
-    fun `shows the server's refusal when an unlock is refused`() = runTest {
-        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"message":"No unlocks left today."}"""))
-        val error = runCatching { api.unlock() }.exceptionOrNull() as ApiError
-        assertFalse(error.outOfTime)
-        assertEquals("No unlocks left today.", error.message)
-        assertEquals("POST", server.takeRequest().method)
+    fun `shows the server's reason when a session is refused`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"message":"The next session isn't open yet."}"""))
+        val error = runCatching { api.startSession(1) }.exceptionOrNull() as ApiError
+        assertFalse(error.refused)
+        assertEquals("The next session isn't open yet.", error.message)
+    }
+
+    @Test
+    fun `both kinds of 402 are refusals`() = runTest {
+        for (body in listOf(
+            """{"error":"out_of_time","message":"You're out of time for today."}""",
+            """{"error":"no_session","message":"This needs a session with a video left."}""",
+        )) {
+            server.enqueue(MockResponse().setResponseCode(402).setBody(body))
+            val error = runCatching { api.search("cats") }.exceptionOrNull() as ApiError
+            assertTrue(error.refused)
+        }
     }
 
     @Test
@@ -95,7 +108,7 @@ class ApiTest {
         server.enqueue(
             MockResponse().setBody(
                 """{"videos":[{"day":"2026-11-03","video_id":"abcdefghijk","title":"T","channel":"C",
-                "charged_seconds":60.0,"unlocked_seconds":30.0}]}""",
+                "watched_seconds":90}]}""",
             ),
         )
         assertEquals("2026-11-03 · 2m", api.history().single().note)
@@ -108,6 +121,13 @@ class FormatTest {
         assertEquals("0:05", durationText(5))
         assertEquals("1:05", durationText(65))
         assertEquals("1:01:40", durationText(3700))
+    }
+
+    @Test
+    fun videos() {
+        assertEquals("1 video", videosText(1))
+        assertEquals("0 videos", videosText(0))
+        assertEquals("3 videos", videosText(3))
     }
 
     @Test

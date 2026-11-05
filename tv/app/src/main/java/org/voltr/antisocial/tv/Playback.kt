@@ -19,18 +19,18 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 
-/** Whether the server refused this load because today's time ran out. */
+/** Whether the server refused this load, for want of a session or of time. */
 @OptIn(UnstableApi::class)
-fun Throwable.isOutOfTime(): Boolean =
+fun Throwable.isRefused(): Boolean =
     generateSequence(this) { it.cause }.any {
-        it is HttpDataSource.InvalidResponseCodeException && it.responseCode == ApiError.OUT_OF_TIME
+        it is HttpDataSource.InvalidResponseCodeException && it.responseCode == ApiError.REFUSED
     }
 
 /** A 402 won't change by asking again, so stop and let the player report it. */
 @OptIn(UnstableApi::class)
-class OutOfTimeAwareErrorPolicy : DefaultLoadErrorHandlingPolicy() {
+class RefusalAwareErrorPolicy : DefaultLoadErrorHandlingPolicy() {
     override fun getRetryDelayMsFor(info: LoadErrorHandlingPolicy.LoadErrorInfo): Long =
-        if (info.exception.isOutOfTime()) C.TIME_UNSET else super.getRetryDelayMsFor(info)
+        if (info.exception.isRefused()) C.TIME_UNSET else super.getRetryDelayMsFor(info)
 }
 
 /** Above 1080p the server only offers AV1, which a stick can't decode in software. */
@@ -57,7 +57,7 @@ fun buildPlayer(context: Context, playlistUrl: String): ExoPlayer {
         .setBackBuffer(30_000, false)
         .build()
     val source = HlsMediaSource.Factory(DefaultHttpDataSource.Factory().setUserAgent("anti-social-tv"))
-        .setLoadErrorHandlingPolicy(OutOfTimeAwareErrorPolicy())
+        .setLoadErrorHandlingPolicy(RefusalAwareErrorPolicy())
         .createMediaSource(MediaItem.fromUri(playlistUrl))
     return ExoPlayer.Builder(context)
         .setTrackSelector(selector)

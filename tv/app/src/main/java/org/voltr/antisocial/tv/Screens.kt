@@ -47,25 +47,25 @@ sealed interface Load<out T> {
     data object Loading : Load<Nothing>
     data class Ready<T>(val value: T) : Load<T>
     data class Failed(val message: String, val unreachable: Boolean) : Load<Nothing>
-    data object OutOfTime : Load<Nothing>
+    data object Refused : Load<Nothing>
 }
 
 class Loader<T>(val state: Load<T>, val retry: () -> Unit)
 
 /**
  * Loads once per back stack entry, so coming Back doesn't search YouTube again. A screen
- * stopped by something outside its control loads itself once that clears: time opening up
- * after an unlock, or the server coming back after the TV wakes.
+ * stopped by something outside its control loads itself once that clears: a session opening,
+ * or the server coming back after the TV wakes.
  */
 @Suppress("UNCHECKED_CAST")
 @Composable
 fun <T> rememberLoad(entry: Entry, budget: Budget, load: suspend () -> T): Loader<T> {
     val state = (entry.data as? Load<T>) ?: Load.Loading
     var attempt by remember { mutableIntStateOf(0) }
-    val canWatch = budget.status?.canWatch == true
-    LaunchedEffect(canWatch, budget.serverDown) {
+    val open = budget.status?.state == SessionState.OPEN
+    LaunchedEffect(open, budget.serverDown) {
         val current = entry.data
-        val cleared = (current is Load.OutOfTime && canWatch) ||
+        val cleared = (current is Load.Refused && open) ||
             (current is Load.Failed && current.unreachable && !budget.serverDown)
         if (cleared) attempt++
     }
@@ -75,13 +75,18 @@ fun <T> rememberLoad(entry: Entry, budget: Budget, load: suspend () -> T): Loade
         entry.data = try {
             Load.Ready(load())
         } catch (e: ApiError) {
-            if (e.outOfTime) Load.OutOfTime else Load.Failed(e.message ?: "Something went wrong.", e.code == 0)
+            if (e.refused) {
+                budget.refresh()
+                Load.Refused
+            } else {
+                Load.Failed(e.message ?: "Something went wrong.", e.code == 0)
+            }
         }
     }
     return Loader(state) { attempt++ }
 }
 
-/** Renders loading, failure and out-of-time the same way on every screen. */
+/** Renders loading, failure and refusal the same way on every screen. */
 @Composable
 private fun <T> Loaded(loader: Loader<T>, budget: Budget, label: String, content: @Composable (T) -> Unit) {
     when (val state = loader.state) {
@@ -95,7 +100,7 @@ private fun <T> Loaded(loader: Loader<T>, budget: Budget, label: String, content
             ActionButton("Try again", loader.retry, Modifier.focusRequester(focus))
             LaunchedEffect(Unit) { focus.requestFocus() }
         }
-        Load.OutOfTime -> OutOfTimePanel(budget, Modifier.padding(top = Unit5 * 4))
+        Load.Refused -> SessionGate(budget, Modifier.padding(top = Unit5 * 4))
         is Load.Ready -> content(state.value)
     }
 }
@@ -104,16 +109,17 @@ private fun <T> Loaded(loader: Loader<T>, budget: Budget, label: String, content
 fun HomeScreen(budget: Budget, searchTab: FocusRequester, open: (Route) -> Unit) {
     val status = budget.status
     Column(verticalArrangement = Arrangement.spacedBy(Unit5 * 4), modifier = Modifier.fillMaxWidth().padding(top = Unit5 * 4)) {
-        if (status != null && !status.canWatch) {
-            OutOfTimePanel(budget)
-            return@Column
-        }
         SearchBox(searchTab) { query -> open(Route.SearchResults(query)) }
-        if (status != null) {
-            Panel {
-                Label("${minutesText(status.remainingSeconds)} left today", Type.h1)
-                BudgetMeter(status)
-                Label("Resets at ${timeOfDay(status.resetsAt)}", Type.muted)
+        val session = status?.session ?: return@Column
+        Panel {
+            Label("${videosText(session.videosLeft)} left", Type.h1)
+            BudgetMeter(status)
+            Label("${minutesText(status.remainingSeconds)} left today. Resets at ${timeOfDay(status.resetsAt)}", Type.muted)
+            if (session.samplesLeft > 0) {
+                Label(
+                    "Leave a video within ${status.sampleSeconds} seconds and it won't count (${session.samplesLeft} left).",
+                    Type.muted,
+                )
             }
         }
     }

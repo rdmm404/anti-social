@@ -14,6 +14,21 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+/** What stands between you and watching. Only OPEN lets you browse and start videos. */
+@Serializable
+enum class SessionState {
+    @SerialName("open") OPEN,
+    @SerialName("choose") CHOOSE,
+    @SerialName("gap") GAP,
+    @SerialName("no_time") NO_TIME,
+}
+
+@Serializable
+data class Session(
+    @SerialName("videos_left") val videosLeft: Int,
+    @SerialName("samples_left") val samplesLeft: Int,
+)
+
 @Serializable
 data class Status(
     @SerialName("budget_seconds") val budgetSeconds: Double,
@@ -21,16 +36,13 @@ data class Status(
     @SerialName("remaining_seconds") val remainingSeconds: Long,
     @SerialName("can_watch") val canWatch: Boolean,
     @SerialName("resets_at") val resetsAt: Double,
-    @SerialName("unlocks_left") val unlocksLeft: Int,
-    @SerialName("budget_spent") val budgetSpent: Boolean,
-    @SerialName("unlock_minutes") val unlockMinutes: Int,
-    @SerialName("unlock_wait_seconds") val unlockWaitSeconds: Int,
-    @SerialName("unlock_starts_at") val unlockStartsAt: Double? = null,
+    val state: SessionState,
+    val session: Session? = null,
+    @SerialName("next_session_at") val nextSessionAt: Double? = null,
+    @SerialName("session_choices") val sessionChoices: List<Int>,
+    @SerialName("sample_seconds") val sampleSeconds: Int,
     val now: Double,
-) {
-    val unlockWaitLeft: Long?
-        get() = unlockStartsAt?.takeIf { it > now }?.let { kotlin.math.ceil(it - now).toLong() }
-}
+)
 
 @Serializable
 data class Video(
@@ -79,8 +91,7 @@ private data class WatchedVideo(
     val day: String,
     val title: String,
     val channel: String = "",
-    @SerialName("charged_seconds") val chargedSeconds: Double = 0.0,
-    @SerialName("unlocked_seconds") val unlockedSeconds: Double = 0.0,
+    @SerialName("watched_seconds") val watchedSeconds: Double = 0.0,
 )
 
 @Serializable
@@ -90,14 +101,18 @@ private data class Watched(val videos: List<WatchedVideo>)
 private data class ErrorBody(val message: String? = null)
 
 @Serializable
+private data class NewSession(val videos: Int)
+
+@Serializable
 private data class NewSubscription(@SerialName("channel_id") val channelId: String, val name: String)
 
 /** The server refused or failed. The message is safe to show. */
 class ApiError(val code: Int, message: String) : Exception(message) {
-    val outOfTime get() = code == OUT_OF_TIME
+    val refused get() = code == REFUSED
 
     companion object {
-        const val OUT_OF_TIME = 402
+        /** No session or no time. Status says which, and what happens next. */
+        const val REFUSED = 402
     }
 }
 
@@ -121,8 +136,9 @@ class Api(
 
     suspend fun status(): Status = get(url("api", "status"))
 
-    suspend fun unlock() {
-        send(Request.Builder().url(url("api", "unlock")).post(EMPTY))
+    suspend fun startSession(videos: Int) {
+        val body = json.encodeToString(NewSession.serializer(), NewSession(videos))
+        send(Request.Builder().url(url("api", "session")).post(body.toRequestBody(JSON)))
     }
 
     suspend fun search(query: String): List<Video> =
@@ -151,7 +167,7 @@ class Api(
                 id = it.videoId,
                 title = it.title,
                 channel = it.channel,
-                note = "${it.day} · ${minutesText((it.chargedSeconds + it.unlockedSeconds).toLong())}",
+                note = "${it.day} · ${minutesText(it.watchedSeconds.toLong())}",
             )
         }
 
@@ -181,6 +197,5 @@ class Api(
 
     private companion object {
         val JSON = "application/json".toMediaType()
-        val EMPTY = ByteArray(0).toRequestBody(null)
     }
 }

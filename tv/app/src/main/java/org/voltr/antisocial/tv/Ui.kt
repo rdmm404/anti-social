@@ -18,9 +18,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -133,47 +133,71 @@ fun BudgetMeter(status: Status) {
     }
 }
 
-/** The one line of budget state in the top bar. */
+/** The one line of session and budget state in the top bar. */
 @Composable
 fun BudgetClock(status: Status?, serverDown: Boolean) {
     val (text, style) = when {
         serverDown || status == null -> "server unreachable" to Type.problem
-        status.unlockWaitLeft != null -> "unlock in ${status.unlockWaitLeft}s" to Type.muted
         !status.canWatch -> "no time left" to Type.problem
-        status.remainingSeconds <= 600 -> "${minutesText(status.remainingSeconds)} left" to Type.strong.copy(color = Palette.warning)
-        else -> "${minutesText(status.remainingSeconds)} left" to Type.muted
+        else -> clockText(status) to
+            if (status.remainingSeconds <= 600) Type.strong.copy(color = Palette.warning) else Type.muted
     }
     Label(text, style, maxLines = 1)
 }
 
-/** Shown wherever watching stops. The server decides; this only offers what it allows. */
-@Composable
-fun OutOfTimePanel(budget: Budget, modifier: Modifier = Modifier) {
-    val status = budget.status
-    val unlockFocus = remember { FocusRequester() }
-    val canUnlock = status != null && status.unlockWaitLeft == null && status.unlocksLeft > 0
-    LaunchedEffect(canUnlock) { if (canUnlock) unlockFocus.requestFocus() }
-    Panel(modifier) {
-        Label("No time left today", Type.h2)
-        if (status == null) return@Panel
-        Label("Your budget resets at ${timeOfDay(status.resetsAt)}", Type.muted)
-        val waiting = status.unlockWaitLeft
-        when {
-            waiting != null -> Label("Adding ${status.unlockMinutes} min in ${waiting}s.")
-            status.unlocksLeft > 0 -> Row(
-                horizontalArrangement = Arrangement.spacedBy(Unit5 * 3),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ActionButton(
-                    "Use an unlock (${status.unlocksLeft} left)",
-                    budget::unlock,
-                    Modifier.focusRequester(unlockFocus),
-                    primary = true,
-                )
-                Label("+${status.unlockMinutes} min, after a ${status.unlockWaitSeconds}s wait", Type.muted)
-            }
-            else -> Label("No unlocks left today.", Type.muted)
-        }
-        budget.unlockError?.let { Label(it, Type.problem) }
+fun clockText(status: Status): String {
+    val time = minutesText(status.remainingSeconds)
+    val session = status.session
+    return if (status.state == SessionState.OPEN && session != null) {
+        "${videosText(session.videosLeft)} · $time"
+    } else {
+        "$time left"
     }
+}
+
+/** What stands between you and watching: the question, the gap, or the end of the day. */
+@Composable
+fun SessionGate(
+    budget: Budget,
+    modifier: Modifier = Modifier,
+    firstChoice: FocusRequester = remember { FocusRequester() },
+) {
+    val status = budget.status
+    val state = status?.state
+    Panel(modifier) {
+        when (state) {
+            SessionState.CHOOSE -> {
+                Label("How many videos?", Type.h1)
+                Row(horizontalArrangement = Arrangement.spacedBy(Unit5 * 2)) {
+                    status.sessionChoices.forEachIndexed { index, videos ->
+                        ActionButton(
+                            videos.toString(),
+                            { budget.startSession(videos) },
+                            // A wrong press can't be undone, so the row doesn't wrap around to the tabs.
+                            Modifier
+                                .focusProperties {
+                                    if (index == 0) left = FocusRequester.Cancel
+                                    if (index == status.sessionChoices.lastIndex) right = FocusRequester.Cancel
+                                }
+                                .then(if (index == 0) Modifier.focusRequester(firstChoice) else Modifier),
+                        )
+                    }
+                }
+                Label("${minutesText(status.remainingSeconds)} left today", Type.muted)
+                budget.sessionError?.let { Label(it, Type.problem) }
+            }
+            SessionState.GAP -> {
+                Label("Session over", Type.h1)
+                status.nextSessionAt?.let { Label("The next one opens at ${timeOfDay(it)}") }
+                Label("${minutesText(status.remainingSeconds)} left today", Type.muted)
+            }
+            SessionState.NO_TIME -> {
+                Label("No time left today", Type.h1)
+                Label("Your time resets at ${timeOfDay(status.resetsAt)}", Type.muted)
+            }
+            // A refusal can arrive just ahead of the status that explains it.
+            SessionState.OPEN, null -> Label("Loading…", Type.muted)
+        }
+    }
+    LaunchedEffect(state) { if (state == SessionState.CHOOSE) firstChoice.requestFocus() }
 }

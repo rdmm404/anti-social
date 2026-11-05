@@ -83,8 +83,8 @@ Pasting a link into the search box does the same.
 ## Fire TV app
 
 `tv/` is a small native app for Android-based Fire TVs. It uses the same API and spends the
-same budget, and all the rules stay on the server. It has search, channels, playlists,
-history, the player and unlocks. Limits are still changed on the web. Fire TVs on Vega OS
+same sessions and budget, and all the rules stay on the server. It has search, channels,
+playlists, history and the player. Limits are still changed on the web. Fire TVs on Vega OS
 can't sideload it.
 
 ```sh

@@ -21,5 +21,7 @@ fun minutesText(seconds: Long): String {
     return if (rest > 0) "${minutes / 60}h ${rest}m" else "${minutes / 60}h"
 }
 
+fun videosText(count: Int): String = "$count ${if (count == 1) "video" else "videos"}"
+
 fun timeOfDay(timestamp: Double): String =
     DateFormat.getTimeInstance(DateFormat.SHORT).format(Date((timestamp * 1000).toLong()))
