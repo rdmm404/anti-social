@@ -80,22 +80,68 @@ Pasting a link into the search box does the same.
   `^https?://(?:www\.|m\.)?youtube\.com/(.*)` and `^https?://youtu\.be/(.*)` to
   `https://yt.nautilus.voltr.org/$1`.
 
+## Go server
+
+`server/` replaces this Python server for clients that play YouTube themselves (ADR 0001). It
+keeps the budget, sessions, settings, subscriptions, playlists and history in Postgres. Clients
+check in about every 15 seconds while a video plays. Each check-in is charged, and its answer
+says whether to go on for another minute. The Python server keeps running until every client
+has moved over (see `docs/plan-hosted.md`).
+
+Tools come from `mise.toml`: Go, dbmate and Java. `.env` holds the device token
+(`ANTI_SOCIAL_TOKEN`, made with `openssl rand -hex 32`) and is never committed.
+
+```sh
+mise run db       # Postgres 18 in Podman or Docker, on 127.0.0.1:55432
+mise run test     # Go tests, each against a fresh database
+mise run server   # http://localhost:8080, settings page at /
+```
+
+Migrations are dbmate files in `server/db/migrations/`. The server applies them on start. Make
+one with `cd server && dbmate new <name>`, apply it with `dbmate up`, then run
+`mise run db:schema` to refresh `server/db/schema.sql`. Once a migration has reached a shared
+database, fix it with a new migration instead of editing it.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ANTI_SOCIAL_DATABASE_URL` | required | Postgres connection string |
+| `ANTI_SOCIAL_TOKEN` | required | The device token, at least 32 characters. Changing it signs out every device. |
+| `ANTI_SOCIAL_ADDR` | `:8080` | Listen address |
+| `TZ` | system | Zone the budget day is counted in |
+| `ANTI_SOCIAL_DAY_START` | `4` | Local hour when the daily budget resets |
+| `ANTI_SOCIAL_COOLING_OFF_HOURS` | `72` | Wait before a looser limit applies |
+| `ANTI_SOCIAL_DAILY_MINUTES` | `120` | Starting value |
+| `ANTI_SOCIAL_SESSION_GAP_MINUTES` | `20` | Starting value |
+
 ## Fire TV app
 
-`tv/` is a small native app for Android-based Fire TVs. It uses the same API and spends the
-same sessions and budget, and all the rules stay on the server. It has search, channels,
-playlists, history and the player. Limits are still changed on the web. Fire TVs on Vega OS
-can't sideload it.
+`tv/` is a native app for Android-based Fire TVs, and it talks to the Go server. It gets video
+from YouTube itself with NewPipeExtractor and plays it with Media3. It checks in before a
+video starts and while it plays, and stops when the server says so or can't be reached for a
+minute. It has search, channels, playlists, history and the player. Limits are changed on the
+server's settings page. Fire TVs on Vega OS can't sideload it.
+
+| Module | Responsibility |
+| --- | --- |
+| `core` | Kotlin Multiplatform: the server API, check-ins, budget state, title cleanup, generated thumbnails, DASH manifests. No Android or YouTube. |
+| `youtube` | NewPipeExtractor, behind core's `YouTube` interface |
+| `playback` | Media3 |
+| `tv` | The screens |
 
 ```sh
 cd tv
-./gradlew testDebugUnitTest
-./gradlew assembleRelease   # -PantiSocialServer=http://10.0.2.2:8484 for another server
+./gradlew :core:jvmTest :youtube:test testDebugUnitTest
+./gradlew :youtube:test -Plive           # also checks extraction against YouTube itself
+./gradlew assembleRelease                # -PantiSocialServer=http://10.0.2.2:8080 for the emulator
 adb connect <tv-ip>:5555
-adb install -r app/build/outputs/apk/release/app-release.apk
+adb install -r tv/build/outputs/apk/release/tv-release.apk
 ```
 
-It needs JDK 21 and the Android SDK, with `sdk.dir` in `tv/local.properties`. Local builds are
+On first start the app asks for the device token. Typing it with the remote is slow, so open
+the field and run `adb shell input text <token>`. Debug builds can carry one instead, with
+`-PantiSocialToken=...`. Release builds never do, because they're published.
+
+It needs JDK 21 and the Android SDK (`ANDROID_HOME`, which `mise.toml` sets). Local builds are
 signed with the machine's debug key, so installing a release over one means uninstalling first.
 
 Releases are built by `.github/workflows/tv-release.yml`. Push a tag like `tv-v1.2.0` and it
@@ -128,6 +174,7 @@ one, has to be uninstalled first.
 | `playlists.py` | Saved video lists |
 | `branding.py` | Title cleanup and generated-frame thumbnails |
 | `main.py` | HTTP routes |
+| `server/` | The Go server |
 | `tv/` | The Fire TV app |
 | `static/` | Frontend, with hls.js, JetBrains Mono and a Lucide icon sprite vendored |
 

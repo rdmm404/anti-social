@@ -1,0 +1,22 @@
+package org.voltr.antisocial.core
+
+import kotlin.math.ceil
+
+/** 65 -> 1:05, 3700 -> 1:01:40 */
+fun durationText(seconds: Long): String {
+    val total = seconds.coerceAtLeast(0)
+    val hours = total / 3600
+    val minutes = (total % 3600) / 60
+    val secs = (total % 60).toString().padStart(2, '0')
+    return if (hours > 0) "$hours:${minutes.toString().padStart(2, '0')}:$secs" else "$minutes:$secs"
+}
+
+/** 90 -> 2m, 3660 -> 1h 1m. Rounds up, so the last few seconds still show as a minute. */
+fun minutesText(seconds: Long): String {
+    val minutes = ceil(seconds / 60.0).toLong()
+    if (minutes < 60) return "${minutes}m"
+    val rest = minutes % 60
+    return if (rest > 0) "${minutes / 60}h ${rest}m" else "${minutes / 60}h"
+}
+
+fun videosText(count: Int): String = "$count ${if (count == 1) "video" else "videos"}"

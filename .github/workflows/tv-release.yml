@@ -33,7 +33,7 @@ jobs:
           ANTI_SOCIAL_KEYSTORE: ${{ runner.temp }}/release.jks
           ANTI_SOCIAL_KEYSTORE_PASSWORD: ${{ secrets.TV_KEYSTORE_PASSWORD }}
         run: >
-          ./gradlew testDebugUnitTest assembleRelease
+          ./gradlew :core:jvmTest :youtube:test testDebugUnitTest assembleRelease
           -PversionCode=${{ github.run_number }}
           -PversionName=${GITHUB_REF_NAME#tv-v}
 
@@ -42,6 +42,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp tv/app/build/outputs/apk/release/app-release.apk anti-social-tv.apk
+          cp tv/tv/build/outputs/apk/release/tv-release.apk anti-social-tv.apk
           gh release create "$GITHUB_REF_NAME" anti-social-tv.apk \
             --title "Fire TV app ${GITHUB_REF_NAME#tv-v}" --generate-notes
