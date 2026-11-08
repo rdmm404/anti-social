@@ -54,6 +54,16 @@ Done when the extension works in a desktop Chromium browser, including the budge
 
 ## 7. Share it
 
+## Someday: other platforms
+
+The long-term aim: one app for using every platform on purpose, not just YouTube. Not scheduled yet. Reddit, Instagram, Facebook and X would be restyled websites, not clients of our own: X sent Nitter a cease and desist in August 2026, Meta has no API for reading your feed and goes after scrapers, and Reddit's logged-in website gives voting, commenting and subscriptions without needing an API key.
+
+- **One mechanism:** per-site rules for what to hide and what counts as a post, injected by the desktop extension and, on Android, by a WebView screen in our app (Chrome on Android has no extensions). The accessibility service blocks the official apps and the sites in browsers, and sends links to the app. The user logs in to their real account in the WebView.
+- **What each site keeps:** Instagram and Facebook open their Favorites or friends feeds, keep stories, DMs, events and birthdays, and hide Reels, Explore, suggested posts and Marketplace. X opens Following and hides For You, Explore, trends and Grok. Reddit keeps subscriptions and hides r/popular, r/all, recommendations and app nags. Desktop Reddit can use old.reddit.com, which changes less often.
+- **Budget:** "N things per day" plus an optional time cap. A session asks how many things you want, as it already does for videos. A post counts once it's mostly on screen for about a second, once per budget day. Opening a thread or a carousel is one post. A feed page where the rules find no posts is treated as broken and blocked, so a stale selector can't silently turn the budget off.
+- **Risks:** selectors break whenever a site changes. Meta and X can detect WebViews and make logging in harder. Add X last, since it has shown it will send lawyers, and only ever hide things on its page.
+- **The ledger:** don't hardcode "video" into the Go ledger more than milestone 1 needs, so "posts" can be added later.
+
 ## Alongside
 
 - Design tokens in one JSON file, generated into CSS variables and a Kotlin theme. Lucide icons and JetBrains Mono from the same sources everywhere. The settings page and the extension both use the CSS side.
