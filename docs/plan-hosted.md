@@ -57,4 +57,5 @@ Done when the extension works in a desktop Chromium browser, including the budge
 ## Alongside
 
 - Design tokens in one JSON file, generated into CSS variables and a Kotlin theme. Lucide icons and JetBrains Mono from the same sources everywhere. The settings page and the extension both use the CSS side.
-- A short catalog of shared components: video row, channel header, budget meter, session prompt.
+- A short catalog of shared components: video row, channel header, budget meter, session gate.
+- The session gate replaces today's full-page `gatePanel()`. The video page stays, its generated frame blurred and dimmed behind a dialog, with title and channel still visible. With no session open: "X minutes left today. Start a session?" and the 1-3 picker, which then plays this video. Between sessions: when the next one opens. Out of time: when the day resets. Mid-playback it pauses and blurs the current frame, and resumes in place once a session opens. A video that already took up a slot today shows no gate. Same wording on every client, kept with the design tokens. Built for the TV in milestone 1.
