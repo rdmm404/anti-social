@@ -1,0 +1,14 @@
+{{define "sign-in.html"}}{{template "head"}}
+<header><strong>anti-social</strong></header>
+<main>
+  <form class="panel" method="post" action="/sign-in">
+    <h1>Sign in</h1>
+    <p class="muted">Paste this server's device token. This browser remembers it.</p>
+    {{with .Problem}}<p class="problem">{{.}}</p>{{end}}
+    <label>Token
+      <input type="password" name="token" autocomplete="current-password" required autofocus>
+    </label>
+    <div class="row"><button class="primary" type="submit">Sign in</button></div>
+  </form>
+</main>
+{{template "foot"}}{{end}}

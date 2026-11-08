@@ -1,0 +1,75 @@
+{{define "settings.html"}}{{template "head"}}
+<header>
+  <strong>anti-social</strong>
+  <span class="spacer"></span>
+  <form method="post" action="/sign-out"><button class="link" type="submit">Sign out</button></form>
+</header>
+<main>
+  {{with .Notice}}<p class="notice">{{.}}</p>{{end}}
+  {{with .Problem}}<p class="problem">{{.}}</p>{{end}}
+
+  {{with .Status}}
+  <section class="panel">
+    <h1>{{minutes .RemainingSeconds}} left today</h1>
+    <div class="meter" role="img" aria-label="{{percent .UsedSeconds .BudgetSeconds}}% of today's budget used"><span style="width: {{percent .UsedSeconds .BudgetSeconds}}%"></span></div>
+    <p class="muted">
+      {{minutes .UsedSeconds}} of {{minutes .BudgetSeconds}} used. Resets at {{clock .ResetsAt}}.
+      {{if eq .State "open"}}{{with .Session}}A session is open with {{.VideosLeft}} {{if eq .VideosLeft 1}}video{{else}}videos{{end}} left.{{end}}
+      {{else if eq .State "gap"}}{{with .NextSessionAt}}The next session opens at {{clock .}}.{{end}}
+      {{else if eq .State "no_time"}}<span class="warning">No time left today.</span>
+      {{end}}
+    </p>
+  </section>
+  {{end}}
+
+  <form class="panel" method="post" action="/settings">
+    <h2>Limits</h2>
+    <p class="muted">Tighter limits apply at once. Looser ones wait {{.Settings.CoolingOffHours}} hours, so they're decided calmly.</p>
+    <div class="fields">
+      {{range $key := .SettingNames}}
+      <label>{{label $key}}
+        <span class="row">
+          <input type="number" name="{{$key}}" value="{{index $.Settings.Settings $key}}" min="{{low $key}}" max="{{high $key}}" required>
+          <span class="muted">minutes</span>
+        </span>
+      </label>
+      {{end}}
+    </div>
+    <div class="row"><button class="primary" type="submit">Save</button></div>
+  </form>
+
+  {{if .Settings.Pending}}
+  <section class="panel">
+    <h2>Waiting to apply</h2>
+    <ul>
+      {{range .Settings.Pending}}
+      <li class="row">
+        <span>{{label .Key}} to {{.Value}} minutes, on {{when .ApplyAt}}</span>
+        <form method="post" action="/settings/pending/{{.ID}}/cancel"><button class="link" type="submit">Cancel</button></form>
+      </li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  <section class="panel">
+    <h2>Last 7 days</h2>
+    <ul>
+      {{range .Days}}
+      <li class="day">
+        <span class="muted">{{weekday .Day}}</span>
+        <span class="meter"><span style="width: {{percent .WatchedSeconds $.Status.BudgetSeconds}}%"></span></span>
+        <span class="num">{{minutes .WatchedSeconds}}</span>
+      </li>
+      {{end}}
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2>Subscriptions</h2>
+    {{if .Subscriptions}}
+    <ul class="columns">{{range .Subscriptions}}<li>{{.Name}}</li>{{end}}</ul>
+    {{else}}<p class="muted">None yet. Subscribe from a channel's page in the app.</p>{{end}}
+  </section>
+</main>
+{{template "foot"}}{{end}}

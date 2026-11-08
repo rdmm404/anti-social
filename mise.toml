@@ -1,0 +1,47 @@
+[tools]
+go = "1.27.3"
+dbmate = "2.37.0"
+
+[env]
+_.file = ".env"
+# The local Postgres that `mise run db` starts. Tests make a database of their own in it per test.
+ANTI_SOCIAL_TEST_DATABASE_URL = "postgres://anti_social:dev@127.0.0.1:55432/anti_social?sslmode=disable"
+# For the dbmate CLI, run from server/.
+DATABASE_URL = "postgres://anti_social:dev@127.0.0.1:55432/anti_social?sslmode=disable"
+
+[tasks.db]
+description = "Start a local Postgres for the server and its tests"
+run = '''
+runtime=$(command -v podman || command -v docker)
+if ! $runtime container exists anti-social-pg 2>/dev/null && ! $runtime inspect anti-social-pg >/dev/null 2>&1; then
+  $runtime run -d --name anti-social-pg -p 127.0.0.1:55432:5432 \
+    -e POSTGRES_USER=anti_social -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=anti_social \
+    docker.io/library/postgres:18-alpine
+else
+  $runtime start anti-social-pg >/dev/null
+fi
+until $runtime exec anti-social-pg pg_isready -U anti_social -q; do sleep 1; done
+echo "Postgres is up at $DATABASE_URL"
+'''
+
+[tasks.server]
+description = "Run the server against the local Postgres, with the token in .env"
+dir = "server"
+depends = ["db"]
+run = "go run ./cmd/anti-social"
+env = { ANTI_SOCIAL_DATABASE_URL = "postgres://anti_social:dev@127.0.0.1:55432/anti_social?sslmode=disable", ANTI_SOCIAL_ADDR = ":8080" }
+
+[tasks.test]
+description = "Run the server's tests"
+dir = "server"
+depends = ["db"]
+run = "go vet ./... && go test ./..."
+
+[tasks."db:schema"]
+description = "Write server/db/schema.sql from the local database, after `dbmate up`"
+dir = "server"
+run = '''
+runtime=$(command -v podman || command -v docker)
+$runtime exec anti-social-pg pg_dump -U anti_social --schema-only --no-owner --no-privileges anti_social \
+  | grep -v '^\\\(un\)\?restrict ' > db/schema.sql
+'''
