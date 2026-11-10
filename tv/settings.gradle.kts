@@ -28,3 +28,5 @@ include(":youtube")
 include(":playback")
 // tv: the Fire TV screens.
 include(":tv")
+// phone: the Android phone screens.
+include(":phone")

@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.AntiSocial" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:colorBackground">@color/background</item>
+    </style>
+    <color name="background">#181825</color>
+</resources>

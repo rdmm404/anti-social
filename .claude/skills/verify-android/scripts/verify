@@ -8,14 +8,15 @@ ADB=${ADB:-$HOME/Android/Sdk/platform-tools/adb}
 EMULATOR=$HOME/Android/Sdk/emulator/emulator
 PG=anti-social-pg
 PORT=${VERIFY_PORT:-38080}
-EMU_PORT=5580
-EMU_SERIAL=emulator-$EMU_PORT
+# The Fire TV and phone emulators get their own ports, so either can run beside another emulator.
+TV_AVD=firetv-sim TV_EMU_PORT=5580
+PHONE_AVD=phone-sim PHONE_EMU_PORT=5582
 RUNTIME=$(command -v podman || command -v docker)
 
 die() { echo "verify: $*" >&2; exit 1; }
 run_dir() { [ -e "$REPO/.verify/current" ] || die "no run; start one with: verify up"; readlink -f "$REPO/.verify/current"; }
 state() { local f; f="$(run_dir)/$1"; [ -f "$f" ] && cat "$f" || true; }
-serial() { local s; s=$(state serial); [ -n "$s" ] || die "no device chosen; run: verify device <emulator|tv|phone>"; echo "$s"; }
+serial() { local s; s=$(state serial); [ -n "$s" ] || die "no device chosen; run: verify device <emulator|phone-emulator|tv|phone>"; echo "$s"; }
 adbd() { "$ADB" -s "$(serial)" "$@"; }
 db_url() { echo "postgres://anti_social:dev@127.0.0.1:55432/$(state db)?sslmode=disable"; }
 ours() { local pid=$1 want=$2; [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] && tr '\0' ' ' <"/proc/$pid/cmdline" | command grep -q -- "$want"; }
@@ -42,26 +43,33 @@ up() {
   echo "run $id: server on :$PORT, database $db, evidence in $dir"
 }
 
+# Boots an AVD headless, waits until it can reach the server, and makes it the run's device.
+start_emulator() {
+  local avd=$1 port=$2 dir; dir=$(run_dir)
+  local emu=emulator-$port
+  if ! "$ADB" devices | command grep -q "^$emu"; then
+    # -read-only: a throwaway instance that leaves the AVD as it was and can run beside another.
+    nohup "$EMULATOR" -avd "$avd" -port "$port" -read-only -no-window -no-audio -no-boot-anim -no-snapshot \
+      >"$dir/emulator.log" 2>&1 &
+    echo $! >"$dir/emulator.pid"
+    echo "$avd" >"$dir/emulator.avd"
+  fi
+  "$ADB" -s "$emu" wait-for-device
+  until [ "$("$ADB" -s "$emu" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 1; done
+  echo "$emu" >"$dir/serial"
+  echo "http://10.0.2.2:$PORT" >"$dir/server_url"
+  # Wi-Fi comes up a while after boot_completed. Ready means the app could reach the server.
+  for _ in $(seq 1 60); do
+    "$ADB" -s "$emu" shell "printf 'GET /healthz HTTP/1.0\r\n\r\n' | toybox nc -w 2 10.0.2.2 $PORT" 2>/dev/null | command grep -q '200 OK' && break
+    sleep 1
+  done
+}
+
 device() {
   local dir; dir=$(run_dir)
   case "${1:-}" in
-    emulator)
-      if ! "$ADB" devices | command grep -q "^$EMU_SERIAL"; then
-        # -read-only: a throwaway instance that leaves the AVD as it was and can run beside another.
-        nohup "$EMULATOR" -avd firetv-sim -port "$EMU_PORT" -read-only -no-window -no-audio -no-boot-anim -no-snapshot \
-          >"$dir/emulator.log" 2>&1 &
-        echo $! >"$dir/emulator.pid"
-      fi
-      "$ADB" -s "$EMU_SERIAL" wait-for-device
-      until [ "$("$ADB" -s "$EMU_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 1; done
-      echo "$EMU_SERIAL" >"$dir/serial"
-      echo "http://10.0.2.2:$PORT" >"$dir/server_url"
-      # Wi-Fi comes up a while after boot_completed. Ready means the app could reach the server.
-      for _ in $(seq 1 60); do
-        "$ADB" -s "$EMU_SERIAL" shell "printf 'GET /healthz HTTP/1.0\r\n\r\n' | toybox nc -w 2 10.0.2.2 $PORT" 2>/dev/null | command grep -q '200 OK' && break
-        sleep 1
-      done
-      ;;
+    emulator) start_emulator "$TV_AVD" "$TV_EMU_PORT" ;;
+    phone-emulator) start_emulator "$PHONE_AVD" "$PHONE_EMU_PORT" ;;
     tv | phone)
       local s=${2:-}
       [ -n "$s" ] || die "give the device's adb address: verify device $1 <ip:port>"
@@ -71,7 +79,7 @@ device() {
       local ip; ip=$(ip -4 route get "${s%:*}" | sed -n 's/.* src \([0-9.]*\).*/\1/p')
       echo "http://$ip:$PORT" >"$dir/server_url"
       ;;
-    *) die "usage: verify device <emulator | tv <ip:port> | phone <ip:port>>" ;;
+    *) die "usage: verify device <emulator | phone-emulator | tv <ip:port> | phone <ip:port>>" ;;
   esac
   echo "device $(state serial), app server $(state server_url)"
 }
@@ -170,7 +178,8 @@ down() {
   local pid; pid=$(state server.pid)
   if ours "$pid" "$dir/anti-social"; then kill "$pid"; echo "stopped server $pid"; fi
   pid=$(state emulator.pid)
-  if ours "$pid" "firetv-sim"; then "$ADB" -s "$EMU_SERIAL" emu kill >/dev/null 2>&1 || kill "$pid"; echo "stopped emulator $pid"; fi
+  local avd; avd=$(state emulator.avd)
+  if [ -n "$avd" ] && ours "$pid" "-avd $avd"; then "$ADB" -s "$(state serial)" emu kill >/dev/null 2>&1 || kill "$pid"; echo "stopped emulator $pid"; fi
   local db; db=$(state db)
   [ -n "$db" ] && "$RUNTIME" exec "$PG" psql -q -U anti_social -d anti_social -c "DROP DATABASE IF EXISTS $db WITH (FORCE)" >/dev/null && echo "dropped $db"
   command rm -f "$dir/anti-social" "$dir/token"
