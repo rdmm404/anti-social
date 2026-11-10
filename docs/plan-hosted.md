@@ -19,7 +19,7 @@ This is a direction, not a contract. Each milestone ships a thin slice that work
 - Split `tv/` into Gradle modules: `core` (Kotlin Multiplatform: API client, check-ins, session and budget state, SponsorBlock, screen state, generated thumbnails and de-shouted titles), `youtube` (NewPipeExtractor), `playback` (Media3) and `tv` (screens only).
 - On-device extraction plus check-ins against the Go server. The app refuses to start a video without a successful check-in.
 
-Done when the Go server runs in the homelab and the Fire TV works against it. Blocking YouTube on the Fire TV moved to milestone 4, so the phone app and the extension come first.
+Done when the Go server runs in the homelab and the Fire TV works against it. Blocking YouTube on the Fire TV and SponsorBlock moved to milestone 4, so the phone app and the extension come first.
 
 ## 2. Phone app, same as the TV
 
@@ -30,9 +30,11 @@ The TV app on a phone first. Blocking and updates wait for milestone 4: YouTube 
 - youtube.com, youtu.be and Shorts links, opened or shared, play in the app as regular videos. They need a session like any other video.
 - Pairing without reading a code: the app starts a pairing and opens `/pair?code=...` itself in a Custom Tab. Approve there, signing in first if Chrome isn't already, and the app claims its token as the TV does.
 - Releases on `phone-v*` tags, built and signed the way `tv-v*` is, so each app ships on its own.
+- Beyond the TV, what the v1 web app had: the description with links and timestamps that seek, comments, playlist editing (create one, add from the player, remove an item, delete one), importing a YouTube playlist from a link (read on the device, saved through the API), pasting a link into search, and the server's settings page in a Custom Tab.
+- More metadata: upload date and views in video lists, and likes too on the video page, the only place NewPipe gives them. It goes in `core`, so the TV can show it as well.
 - Built for my OnePlus 12 on Android 16.
 
-Done when it's installed on my phone, paired with the server, and does what the TV does.
+Done when it's installed on my phone, paired with the server, and does what the TV and the v1 web app do.
 
 ## 3. Desktop extension
 
@@ -40,11 +42,12 @@ Done when it's installed on my phone, paired with the server, and does what the 
 
 Done when the extension works in a desktop Chromium browser, including the budget and sessions.
 
-## 4. Blocking and updates
+## 4. Blocking, updates and SponsorBlock
 
 - Phone blocking from ADR 0002: Open by default for YouTube links, the accessibility service, and a setup screen that walks through the adb disable.
 - Fire TV blocking, best effort: find out what Fire OS allows for Amazon's YouTube app (adb disable, uninstall) and whether an accessibility service can catch it and Silk.
 - An in-app updater in shared code for phone and TV: check GitHub Releases, offer to install.
+- SponsorBlock skips in `core` for phone and TV, with the categories set on the settings page (ADR 0002).
 
 ## 5. Validation and hardening
 
