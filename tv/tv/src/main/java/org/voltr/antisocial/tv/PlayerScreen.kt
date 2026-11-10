@@ -31,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -294,6 +295,7 @@ private fun VideoPlayer(
     }
 
     val seekBar = remember { FocusRequester() }
+    val buttons = remember { FocusRequester() }
     fun seekBy(delta: Long) {
         val from = seekTarget ?: position
         val upper = if (durationMs > 0) durationMs else Long.MAX_VALUE
@@ -436,14 +438,19 @@ private fun VideoPlayer(
                     focus = seekBar,
                     onSeek = ::seekBy,
                     onToggle = ::togglePlaying,
+                    // Spelled out so Down from the seek bar always lands on the buttons, and Up comes back.
+                    modifier = Modifier.focusProperties { down = if (controls) buttons else FocusRequester.Cancel },
                 )
                 if (controls) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(Unit5 * 2)) {
+                    Row(
+                        Modifier.focusProperties { up = seekBar },
+                        horizontalArrangement = Arrangement.spacedBy(Unit5 * 2),
+                    ) {
                         ActionButton(speedText(speed), {
                             speed = SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.size]
                             player?.setPlaybackSpeed(speed)
                             activity++
-                        })
+                        }, Modifier.focusRequester(buttons))
                         ActionButton(qualities.getOrNull(quality)?.label ?: "auto", {
                             quality = (quality + 1) % qualities.size
                             player?.applyQuality(qualities[quality].override)
@@ -499,12 +506,13 @@ private fun SeekBar(
     focus: FocusRequester,
     onSeek: (Long) -> Unit,
     onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val fraction = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
     Column(
-        Modifier
+        modifier
             .focusRequester(focus)
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false

@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleStartEffect
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -145,6 +146,10 @@ private fun SearchBox(tab: FocusRequester, onSearch: (String) -> Unit) {
 
     if (editing) {
         BackHandler { stopEditing() }
+        // Leaving the app or the field ends editing, so coming back lands on the button again
+        // rather than on an empty field that has lost focus to the tabs.
+        LifecycleStartEffect(Unit) { onStopOrDispose { editing = false } }
+        var hadFocus by remember { mutableStateOf(false) }
         BasicTextField(
             value = text,
             onValueChange = { text = it },
@@ -160,6 +165,10 @@ private fun SearchBox(tab: FocusRequester, onSearch: (String) -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .focusRequester(field)
+                .onFocusChanged {
+                    if (hadFocus && !it.isFocused) stopEditing()
+                    hadFocus = it.isFocused
+                }
                 .background(Palette.raised, Corner)
                 .padding(Unit5 * 3),
         )
