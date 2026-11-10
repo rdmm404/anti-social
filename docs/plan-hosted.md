@@ -16,9 +16,8 @@ How to get from the self-hosted server to the design in ADRs 0001-0004. The firs
 
 - Split `tv/` into Gradle modules: `core` (Kotlin Multiplatform: API client, check-ins, session and budget state, SponsorBlock, screen state, generated thumbnails and de-shouted titles), `youtube` (NewPipeExtractor), `playback` (Media3) and `tv` (screens only).
 - On-device extraction plus check-ins against the Go server. The app refuses to start a video without a successful check-in.
-- Fire TV blocking, best effort: find out what Fire OS allows for Amazon's YouTube app (adb disable, uninstall) and whether an accessibility service can catch it and Silk.
 
-Done when the Go server runs in the homelab, the Fire TV works against it, and YouTube on the Fire TV is blocked as far as Fire OS allows.
+Done when the Go server runs in the homelab and the Fire TV works against it. Blocking YouTube on the Fire TV moved to milestone 4, so the phone app and the extension come first.
 
 ## 2. Phone app and updates
 
@@ -36,6 +35,7 @@ Done when the extension works in a desktop Chromium browser, including the budge
 
 ## 4. Validation and hardening
 
+- Fire TV blocking, best effort: find out what Fire OS allows for Amazon's YouTube app (adb disable, uninstall) and whether an accessibility service can catch it and Silk.
 - A week or so of daily use: note every imperfection, try to break it (offline, airplane mode, two devices, killing the app mid-video, clearing data), fix as I go.
 - Stop the Python server, delete `src/anti_social/`, and move the README to the new setup.
 
