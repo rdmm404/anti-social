@@ -8,6 +8,7 @@ import android.os.Build
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
@@ -18,6 +19,7 @@ import androidx.media3.exoplayer.dash.manifest.DashManifestParser
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import org.voltr.antisocial.core.Streams
 import org.voltr.antisocial.core.dashManifest
+import org.voltr.antisocial.core.frameUrl
 
 /** Above 1080p YouTube only offers AV1, which a stick can't decode in software. */
 fun hasHardwareAv1(): Boolean =
@@ -44,7 +46,14 @@ fun buildPlayer(context: Context, streams: Streams): ExoPlayer {
         .setReadTimeoutMs(20_000)
     val manifestUri = Uri.parse("https://www.youtube.com/watch?v=${streams.details.id}")
     val manifest = DashManifestParser().parse(manifestUri, dashManifest(streams).byteInputStream())
-    val source = DashMediaSource.Factory(http).createMediaSource(manifest, MediaItem.fromUri(manifestUri))
+    // The title and channel show wherever the system shows what's playing: notification, lock screen.
+    val metadata = MediaMetadata.Builder()
+        .setTitle(streams.details.title)
+        .setArtist(streams.details.channel)
+        .setArtworkUri(Uri.parse(frameUrl(streams.details.id)))
+        .build()
+    val item = MediaItem.Builder().setUri(manifestUri).setMediaMetadata(metadata).build()
+    val source = DashMediaSource.Factory(http).createMediaSource(manifest, item)
     return ExoPlayer.Builder(context)
         .setTrackSelector(DefaultTrackSelector(context))
         .build()

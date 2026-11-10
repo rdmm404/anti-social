@@ -45,6 +45,10 @@ data class Video(
     val duration: Int? = null,
     /** Set when the video comes from history. */
     val note: String? = null,
+    /** YouTube's count, when the list came from YouTube. Server lists don't carry it. */
+    val views: Long? = null,
+    /** When it went up, as YouTube words it ("3 days ago"). Only from YouTube. */
+    val uploaded: String? = null,
 )
 
 @Serializable
@@ -71,3 +75,16 @@ data class CheckinReply(
     @SerialName("expires_at") val expiresAt: Double,
     val status: Status,
 )
+
+/** A top-level comment on a video. */
+data class Comment(
+    val author: String,
+    val text: String,
+    /** As YouTube words it: "2 weeks ago". */
+    val `when`: String,
+    val likes: Long,
+    val pinned: Boolean,
+)
+
+/** A playlist on YouTube itself, read to import it. */
+data class YouTubePlaylist(val name: String, val videos: List<Video>)

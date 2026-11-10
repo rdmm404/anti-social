@@ -88,7 +88,12 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
+    implementation(libs.media3.ui)
+    implementation(libs.media3.session)
+    implementation(libs.androidx.browser)
     implementation(libs.coroutines.android)
+    implementation(libs.coil.compose)
+    implementation(libs.coil.okhttp)
     coreLibraryDesugaring(libs.desugar)
 
     testImplementation(libs.junit)

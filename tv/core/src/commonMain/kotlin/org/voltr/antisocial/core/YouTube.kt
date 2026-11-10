@@ -11,7 +11,14 @@ interface YouTube {
     /** The channel's newest videos. [id] is a UC… id or an @handle. */
     suspend fun channel(id: String): ChannelPage
 
+    /** The streams to play, with the video page's details: description, views, likes and date. */
     suspend fun streams(videoId: String): Streams
+
+    /** The first page of top-level comments, as YouTube orders them. */
+    suspend fun comments(videoId: String): List<Comment>
+
+    /** A playlist's name and videos, up to [limit] of them. [id] is a list= id. */
+    suspend fun playlist(id: String, limit: Int = 500): YouTubePlaylist
 }
 
 /** YouTube wouldn't give us this. The message is safe to show. */
@@ -23,6 +30,13 @@ data class VideoDetails(
     val channel: String,
     val channelId: String?,
     val durationSeconds: Long,
+    /** Plain text, links and timestamps written out. */
+    val description: String = "",
+    val views: Long? = null,
+    /** NewPipe only gives likes on the video page, not in lists. */
+    val likes: Long? = null,
+    /** The upload date, as YYYY-MM-DD. */
+    val uploaded: String? = null,
 )
 
 /**

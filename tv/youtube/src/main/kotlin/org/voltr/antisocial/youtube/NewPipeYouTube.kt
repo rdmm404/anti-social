@@ -8,6 +8,8 @@ import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.channel.ChannelInfo
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabs
+import org.schabi.newpipe.extractor.comments.CommentsInfo
+import org.schabi.newpipe.extractor.comments.CommentsInfoItem
 import org.schabi.newpipe.extractor.exceptions.AgeRestrictedContentException
 import org.schabi.newpipe.extractor.exceptions.ContentNotAvailableException
 import org.schabi.newpipe.extractor.exceptions.GeographicRestrictionException
@@ -15,32 +17,40 @@ import org.schabi.newpipe.extractor.exceptions.PaidContentException
 import org.schabi.newpipe.extractor.exceptions.PrivateContentException
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import org.schabi.newpipe.extractor.localization.ContentCountry
+import org.schabi.newpipe.extractor.localization.DateWrapper
 import org.schabi.newpipe.extractor.localization.Localization
+import org.schabi.newpipe.extractor.playlist.PlaylistInfo
 import org.schabi.newpipe.extractor.search.SearchInfo
 import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
 import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
+import org.schabi.newpipe.extractor.stream.Description
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import org.schabi.newpipe.extractor.stream.StreamType
 import org.schabi.newpipe.extractor.stream.VideoStream
 import org.voltr.antisocial.core.ChannelPage
+import org.voltr.antisocial.core.Comment
 import org.voltr.antisocial.core.Streams
 import org.voltr.antisocial.core.Track
 import org.voltr.antisocial.core.Video
 import org.voltr.antisocial.core.VideoDetails
 import org.voltr.antisocial.core.YouTube
 import org.voltr.antisocial.core.YouTubeError
+import org.voltr.antisocial.core.YouTubePlaylist
 import org.voltr.antisocial.core.chooseVideoTracks
 import org.voltr.antisocial.core.cleanTitle
 import java.io.IOException
+import java.time.ZoneId
 import java.util.Locale
 
 private val VIDEO_ID = Regex("^[\\w-]{11}$")
 private val CHANNEL_ID = Regex("^(UC[\\w-]{20,}|@[\\w.-]+)$")
+private val PLAYLIST_ID = Regex("^[\\w-]{10,}$")
 private const val SEARCH_RESULTS = 20
+private const val COMMENT_LIMIT = 50
 
 /**
  * YouTube through NewPipeExtractor, which tracks YouTube's changes the way yt-dlp does.
@@ -92,11 +102,46 @@ class NewPipeYouTube(
                 channel = info.uploaderName.orEmpty(),
                 channelId = channelIdOf(info.uploaderUrl),
                 durationSeconds = info.duration,
+                description = plainText(info.description),
+                views = info.viewCount.takeIf { it >= 0 },
+                likes = info.likeCount.takeIf { it >= 0 },
+                uploaded = info.uploadDate?.let(::isoDate),
             ),
             video = video,
             audio = audio,
             headers = headersFor(audio.url),
         )
+    }
+
+    override suspend fun comments(videoId: String): List<Comment> = extract {
+        if (!VIDEO_ID.matches(videoId)) throw YouTubeError("Not a video id.")
+        val info = CommentsInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId")
+        if (info.isCommentsDisabled) return@extract emptyList()
+        info.relatedItems.filterIsInstance<CommentsInfoItem>().take(COMMENT_LIMIT).map {
+            Comment(
+                author = it.uploaderName.orEmpty(),
+                text = plainText(it.commentText),
+                `when` = it.textualUploadDate.orEmpty(),
+                likes = it.likeCount.toLong().coerceAtLeast(0),
+                pinned = it.isPinned,
+            )
+        }
+    }
+
+    override suspend fun playlist(id: String, limit: Int): YouTubePlaylist = extract {
+        if (!PLAYLIST_ID.matches(id)) throw YouTubeError("Not a playlist id.")
+        val url = "https://www.youtube.com/playlist?list=$id"
+        val info = PlaylistInfo.getInfo(ServiceList.YouTube, url)
+        val items = info.relatedItems.toMutableList()
+        var page = info.nextPage
+        while (page != null && items.size < limit) {
+            val more = PlaylistInfo.getMoreItems(ServiceList.YouTube, url, page)
+            items += more.items
+            page = if (more.hasNextPage()) more.nextPage else null
+        }
+        // A playlist keeps its Shorts: they play as regular videos.
+        val videos = items.toVideos(allowShorts = true).distinctBy { it.id }.take(limit)
+        YouTubePlaylist(cleanTitle(info.name), videos)
     }
 
     private suspend fun <T> extract(block: () -> T): T = withContext(Dispatchers.IO) {
@@ -149,19 +194,76 @@ class NewPipeYouTube(
 internal fun channelIdOf(url: String?): String? =
     url?.substringAfter("/channel/", "")?.substringBefore('/')?.substringBefore('?')?.takeIf { it.isNotEmpty() }
 
-internal fun List<InfoItem>.toVideos(fallbackChannel: String? = null, fallbackChannelId: String? = null): List<Video> =
+internal fun List<InfoItem>.toVideos(
+    fallbackChannel: String? = null,
+    fallbackChannelId: String? = null,
+    allowShorts: Boolean = false,
+): List<Video> =
     filterIsInstance<StreamInfoItem>()
-        .filter { it.streamType == StreamType.VIDEO_STREAM && !it.isShortFormContent && !it.url.contains("/shorts/") }
+        .filter { it.streamType == StreamType.VIDEO_STREAM || (allowShorts && it.streamType == StreamType.NONE) }
+        .filter { allowShorts || (!it.isShortFormContent && !it.url.contains("/shorts/")) }
         .mapNotNull { item ->
-            val id = item.url.substringAfter("v=", "").take(11).takeIf { VIDEO_ID.matches(it) } ?: return@mapNotNull null
+            val id = videoIdOf(item.url) ?: return@mapNotNull null
             Video(
                 id = id,
                 title = cleanTitle(item.name),
                 channel = item.uploaderName ?: fallbackChannel,
                 channelId = channelIdOf(item.uploaderUrl) ?: fallbackChannelId,
                 duration = item.duration.takeIf { it > 0 }?.toInt(),
+                views = item.viewCount.takeIf { it >= 0 },
+                uploaded = item.textualUploadDate?.takeIf { it.isNotBlank() },
             )
         }
+
+/** The id in a watch?v= or /shorts/ URL. */
+internal fun videoIdOf(url: String): String? {
+    val id = if (url.contains("/shorts/")) url.substringAfter("/shorts/") else url.substringAfter("v=", "")
+    return id.take(11).takeIf { VIDEO_ID.matches(it) }
+}
+
+private fun isoDate(date: DateWrapper): String? =
+    runCatching { date.instant.atZone(ZoneId.systemDefault()).toLocalDate().toString() }.getOrNull()
+
+private val BREAK = Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE)
+private val ANCHOR = Regex("""<a\s[^>]*?href="([^"]*)"[^>]*>(.*?)</a>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+private val TAG = Regex("""<[^>]+>""")
+private val TIMESTAMP = Regex("""^(?:\d{1,2}:)?\d{1,2}:\d{2}$""")
+private val ENTITY = Regex("""&(#x[0-9a-fA-F]+|#\d+|amp|lt|gt|quot|apos|nbsp);""")
+
+/**
+ * A description or comment as plain text. YouTube's HTML shortens links and wraps timestamps,
+ * hashtags and mentions in links: links get their full address back, the rest keep their words,
+ * so the app can make its own links of them.
+ */
+internal fun plainText(description: Description?): String {
+    if (description == null) return ""
+    if (description.type() != Description.Type.HTML) return description.content().orEmpty().trim()
+    var text = description.content().orEmpty().replace(BREAK, "\n")
+    text = ANCHOR.replace(text) { match ->
+        val href = unescape(match.groupValues[1])
+        val words = unescape(match.groupValues[2].replace(TAG, "")).trim()
+        val keepWords = TIMESTAMP.matches(words) || words.startsWith("#") || words.startsWith("@") ||
+            !href.startsWith("http")
+        // Escaped again, since every entity is undone below.
+        (if (keepWords) words else href).replace("&", "&amp;")
+    }
+    return unescape(text.replace(TAG, "")).trim()
+}
+
+private fun unescape(text: String): String = ENTITY.replace(text) { match ->
+    when (val name = match.groupValues[1]) {
+        "amp" -> "&"
+        "lt" -> "<"
+        "gt" -> ">"
+        "quot" -> "\""
+        "apos" -> "'"
+        "nbsp" -> " "
+        else -> {
+            val code = if (name.startsWith("#x")) name.drop(2).toIntOrNull(16) else name.drop(1).toIntOrNull()
+            code?.let { String(Character.toChars(it)) } ?: match.value
+        }
+    }
+}
 
 /** Only MP4 tracks with an index can be played in ranges; the rest are left out. */
 internal fun VideoStream.toTrack(): Track? {

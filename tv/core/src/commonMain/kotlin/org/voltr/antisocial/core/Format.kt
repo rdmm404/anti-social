@@ -20,3 +20,28 @@ fun minutesText(seconds: Long): String {
 }
 
 fun videosText(count: Int): String = "$count ${if (count == 1) "video" else "videos"}"
+
+/** 950 -> 950, 1_234 -> 1.2K, 3_400_000 -> 3.4M. One decimal below ten, none above. */
+fun countText(count: Long): String {
+    if (count < 1000) return count.toString()
+    val (value, unit) = when {
+        count >= 1_000_000_000 -> count / 1_000_000_000.0 to "B"
+        count >= 1_000_000 -> count / 1_000_000.0 to "M"
+        else -> count / 1000.0 to "K"
+    }
+    val text = if (value < 10) {
+        val tenths = (value * 10).toLong()
+        if (tenths % 10 == 0L) "${tenths / 10}" else "${tenths / 10}.${tenths % 10}"
+    } else {
+        value.toLong().toString()
+    }
+    return text + unit
+}
+
+/** The parts of a video's line that exist: "1.2M views · 3 days ago". */
+fun videoMeta(views: Long?, uploaded: String?, likes: Long? = null): String =
+    listOfNotNull(
+        views?.let { "${countText(it)} ${if (it == 1L) "view" else "views"}" },
+        uploaded?.takeIf { it.isNotBlank() },
+        likes?.let { "${countText(it)} ${if (it == 1L) "like" else "likes"}" },
+    ).joinToString(" · ")

@@ -56,6 +56,16 @@ private data class WatchedVideo(
 private data class WatchedReply(val videos: List<WatchedVideo>)
 
 @Serializable
+private data class NewPlaylist(val name: String)
+
+@Serializable
+private data class CreatedPlaylist(val id: Int)
+
+/** What a playlist keeps of a video. */
+@Serializable
+private data class PlaylistItem(val id: String, val title: String, val channel: String, val duration: Int? = null)
+
+@Serializable
 private data class NewPairing(val name: String)
 
 @Serializable
@@ -138,6 +148,24 @@ class Api(
     suspend fun playlists(): List<PlaylistRef> = get<PlaylistsReply>("api", "playlists").playlists
 
     suspend fun playlist(id: Int): Playlist = get("api", "playlists", id.toString())
+
+    /** Creates an empty playlist and returns its id. */
+    suspend fun createPlaylist(name: String): Int =
+        send(HttpMethod.Post, "api", "playlists", body = json.encodeToString(NewPlaylist.serializer(), NewPlaylist(name)))
+            .let { json.decodeFromString<CreatedPlaylist>(it).id }
+
+    suspend fun deletePlaylist(id: Int) {
+        send(HttpMethod.Delete, "api", "playlists", id.toString())
+    }
+
+    suspend fun addToPlaylist(id: Int, video: Video) {
+        val item = PlaylistItem(video.id, video.title, video.channel.orEmpty(), video.duration)
+        send(HttpMethod.Post, "api", "playlists", id.toString(), "items", body = json.encodeToString(PlaylistItem.serializer(), item))
+    }
+
+    suspend fun removeFromPlaylist(id: Int, videoId: String) {
+        send(HttpMethod.Delete, "api", "playlists", id.toString(), "items", videoId)
+    }
 
     suspend fun history(): List<Video> =
         get<WatchedReply>("api", "history", "videos").videos.map {

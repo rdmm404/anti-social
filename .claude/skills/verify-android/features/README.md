@@ -27,10 +27,11 @@ Each file has an H1, one paragraph on the user-visible behaviour, then four H2s 
 
 ## Features
 
-Pairing and the session gate were proven on the emulator (TV app) on 2026-11-10. The others are drafted from the code and haven't been run. The first run of each one fixes its recipe.
+Pairing and the session gate were proven on the emulator (TV app) on 2026-11-10. Every phone recipe was proven on the `phone-sim` emulator the same day. The TV recipes for playing, channels and history are drafted from the code and haven't been run on the TV.
 
 - [Pairing](./pairing.md): a new device signs in by having its code approved on the settings page.
 - [Session gate](./session-gate.md): no session means no browsing; the 1-3 picker opens one.
 - [Playing a video](./playing.md): search, play, and check-ins charged to the budget.
 - [Channels](./channels.md): subscribe, the channel list, unsubscribe.
 - [History](./history.md): today's watched videos, readable without a session.
+- [Phone extras](./phone.md): YouTube links and shares, the description and comments, playlists and import, the settings tab.
