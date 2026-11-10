@@ -2,6 +2,8 @@
 
 How to get from the self-hosted server to the design in ADRs 0001-0004. The first milestones serve one user, me, and multi-user comes only after the core has been lived with. The Python server keeps running until every client has moved off it.
 
+This is a direction, not a contract. Each milestone ships a thin slice that works end to end, and the order changes as we learn.
+
 ## 1. Single-user slice: Go server and TV app
 
 **Server**, a new `server/` module in Go:
@@ -19,41 +21,52 @@ How to get from the self-hosted server to the design in ADRs 0001-0004. The firs
 
 Done when the Go server runs in the homelab and the Fire TV works against it. Blocking YouTube on the Fire TV moved to milestone 4, so the phone app and the extension come first.
 
-## 2. Phone app and updates
+## 2. Phone app, same as the TV
 
-- A `phone` module with touch screens on the same `core`, `youtube` and `playback`.
-- Blocking from ADR 0002: link handling, the accessibility service, and a setup screen that walks through the adb disable and Open by default.
-- An in-app updater in shared code for phone and TV: check GitHub Releases, offer to install. CI builds both APKs.
+The TV app on a phone first. Blocking and updates wait for milestone 4: YouTube is already disabled on my phone, and another app already redirects its links.
 
-Done when the phone app installs easily, connects to the Go server, works as well as the TV app, and blocks YouTube.
+- A `phone` module with touch screens on the same `core`, `youtube` and `playback`: search, channels, playlists, history and the player, as on the TV.
+- The player goes full screen on rotate, keeps playing with the screen locked or the app in the background (a Media3 session with its notification), and does picture-in-picture. Check-ins carry on in the background, so the server can still stop it.
+- youtube.com, youtu.be and Shorts links, opened or shared, play in the app as regular videos. They need a session like any other video.
+- Pairing without reading a code: the app starts a pairing and opens `/pair?code=...` itself in a Custom Tab. Approve there, signing in first if Chrome isn't already, and the app claims its token as the TV does.
+- Releases on `phone-v*` tags, built and signed the way `tv-v*` is, so each app ships on its own.
+- Built for my OnePlus 12 on Android 16.
+
+Done when it's installed on my phone, paired with the server, and does what the TV does.
 
 ## 3. Desktop extension
 
-- The youtube.com extension from ADR 0003 for Chromium, in TypeScript, with its own check-in and SponsorBlock code, using the same token.
+- The youtube.com extension from ADR 0003 for Chromium, in TypeScript, with its own check-in and SponsorBlock code, using the same token. Running on youtube.com is what blocks it, so there's no separate redirect.
 
 Done when the extension works in a desktop Chromium browser, including the budget and sessions.
 
-## 4. Validation and hardening
+## 4. Blocking and updates
 
+- Phone blocking from ADR 0002: Open by default for YouTube links, the accessibility service, and a setup screen that walks through the adb disable.
 - Fire TV blocking, best effort: find out what Fire OS allows for Amazon's YouTube app (adb disable, uninstall) and whether an accessibility service can catch it and Silk.
+- An in-app updater in shared code for phone and TV: check GitHub Releases, offer to install.
+
+## 5. Validation and hardening
+
 - A week or so of daily use: note every imperfection, try to break it (offline, airplane mode, two devices, killing the app mid-video, clearing data), fix as I go.
+- Decide whether a short video, such as a Short someone sent, can play without starting a session while still counting against the day, without opening a way around sessions.
 - Stop the Python server, delete `src/anti_social/`, and move the README to the new setup.
 
-## 5. Public deployment, still single user
+## 6. Public deployment, still single user
 
 - Move the server to Cloud Run so nothing depends on Tailscale.
 - Neon Postgres on the free tier, in the same region as the server. Check the free tier's compute-hour limits against check-ins every 15 seconds while something plays.
 - Rate limits and Cloudflare in front.
 - Everything in Terraform, in `infra/`: Cloud Run, Artifact Registry, Secret Manager, service accounts, Workload Identity Federation for GitHub Actions, Neon and Cloudflare DNS. State in a GCS bucket created by a small bootstrap. CI deploys new images with `gcloud run deploy`, and Terraform ignores image changes so the two don't fight.
 
-## 6. Multi-user and go-live prep
+## 7. Multi-user and go-live prep
 
 - Account creation and recovery from ADR 0004 (devices and pairing came in milestone 1), then mark it accepted or revise it.
 - Decide how long the server keeps readable watch history. ADR 0004 says it never holds one, but since milestone 1 it keeps titles per day for the History tab.
 - Move my own data into a real account.
 - Self-hosting docs, the SponsorBlock credit, and whether the extension goes in the Chrome Web Store.
 
-## 7. Share it
+## 8. Share it
 
 ## Someday: other platforms
 
