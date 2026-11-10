@@ -1,0 +1,31 @@
+# The Go server on nautilus, next to the Python one (docker-compose.prd.yml at the repo root)
+# until every client has moved. It uses the homelab's shared Postgres (svc-postgres-db on
+# postgres-network) with its own role and database. server/.env holds ANTI_SOCIAL_TOKEN and
+# ANTI_SOCIAL_DATABASE_URL and is never committed.
+services:
+  server:
+    container_name: svc-anti-social-server
+    build:
+      context: .
+    environment:
+      TZ: "${TZ:-America/Toronto}"
+      ANTI_SOCIAL_ADDR: ":8080"
+    env_file:
+      - .env
+    networks:
+      - postgres-network
+      - traefik_proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.http.routers.anti-social-server.rule=Host(`api.yt.nautilus.voltr.org`)"
+      - "traefik.http.routers.anti-social-server.entrypoints=websecure"
+      - "traefik.http.routers.anti-social-server.tls.certresolver=myresolver"
+      - "traefik.http.services.anti-social-server.loadbalancer.server.port=8080"
+    restart: unless-stopped
+
+networks:
+  postgres-network:
+    external: true
+  traefik_proxy:
+    external: true
