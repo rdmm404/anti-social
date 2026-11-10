@@ -13,13 +13,16 @@ What only the phone app does: it opens YouTube links and shared text, shows a vi
 - `phone-playlist-edit` remove an item; delete a playlist (with confirmation).
 - `phone-import` a YouTube playlist link imports it as a playlist of the account.
 - `phone-next` at the end of a video opened from a playlist, "Next" plays the following one if the session has videos left.
-- `phone-settings` the settings link opens the server's page in a Custom Tab.
+- `phone-settings` the settings link (top right) opens the server's page in a Custom Tab.
+- `phone-share-out` "share" on a video opens the system share sheet with `https://youtu.be/<id>`, without anti-social in it.
+- `phone-nav` search / channels / playlists / history sit in a bottom bar, on every page including the video's; the keyboard hides it.
 
 ## How to get to it (user POV)
 
 - Tap a YouTube link anywhere, or Share → anti-social. Paste a link into search.
-- On a video: "+ playlist", Description/Comments "show".
+- On a video: "+ playlist", "share", Description/Comments "show".
 - The playlists tab: create, import, open, delete.
+- Bottom bar labels sit at y≈2266 (1080x2400): search 135, channels 405, playlists 675, history 945. Tapping "search" on the search page leaves one page in the stack, so Back then leaves the app.
 
 ## Driving it with scripts/verify
 

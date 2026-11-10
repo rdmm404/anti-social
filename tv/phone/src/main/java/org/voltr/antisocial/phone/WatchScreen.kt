@@ -1,10 +1,15 @@
 package org.voltr.antisocial.phone
 
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.os.SystemClock
 import android.view.ViewGroup
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -13,15 +18,15 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
@@ -30,6 +35,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -38,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.LinkAnnotation
@@ -50,9 +57,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.voltr.antisocial.core.countText
 import org.voltr.antisocial.core.ApiError
 import org.voltr.antisocial.core.Comment
 import org.voltr.antisocial.core.SessionState
@@ -62,7 +69,9 @@ import org.voltr.antisocial.core.Verdict
 import org.voltr.antisocial.core.Video
 import org.voltr.antisocial.core.VideoDetails
 import org.voltr.antisocial.core.YouTubeError
+import org.voltr.antisocial.core.countText
 import org.voltr.antisocial.core.durationText
+import org.voltr.antisocial.core.frameUrl
 import org.voltr.antisocial.core.linkParts
 import org.voltr.antisocial.core.parseYouTubeLink
 import org.voltr.antisocial.core.videoMeta
@@ -74,12 +83,16 @@ import org.voltr.antisocial.playback.WatchingState
 
 private const val SEEK_STEP_MS = 10_000L
 private const val CONTROLS_HIDE_MS = 3_000L
+private const val DOUBLE_TAP_MS = 300L
 
 private fun speedText(speed: Float) = "${speed.toString().removeSuffix(".0")}x"
 
+/** A choice the overlay is offering, in place of its controls. */
+private enum class Picker { Speed, Quality }
+
 /**
  * A video's page. The video itself lives in [PlaybackController], so this page only shows it:
- * turning the phone, locking it or leaving the app doesn't stop it.
+ * turning the phone, locking it or leaving the page doesn't stop it.
  */
 @Composable
 fun WatchScreen(
@@ -87,52 +100,84 @@ fun WatchScreen(
     entry: Entry,
     route: Route.Watch,
     navigator: Navigator,
-    inPip: Boolean,
     fullScreen: Boolean,
 ) {
     val opening by services.playback.current.collectAsState()
     LaunchedEffect(route.id) { services.playback.open(route.id, route.startSeconds) }
     val current = opening?.takeIf { it.id == route.id }
-
-    when (current) {
-        null, is Opening.Loading -> Message(fullScreen) { Label("Loading video…", Type.muted) }
-        is Opening.Failed -> Message(fullScreen) {
-            Label(current.message, Type.problem)
-            Row(horizontalArrangement = Arrangement.spacedBy(Unit5 * 2)) {
-                ActionButton("Try again", services.playback::reload, primary = true)
-                ActionButton("Back", navigator::back)
-            }
+    val watching = (current as? Opening.Ready)?.watching
+    if (watching == null) {
+        OpeningPage(services, route, navigator, current as? Opening.Failed, fullScreen)
+        return
+    }
+    val state by watching.state.collectAsState()
+    if (fullScreen) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            Player(services, watching, state, navigator, route, fullScreen = true, Modifier.fillMaxSize())
         }
-        is Opening.Ready -> {
-            val watching = current.watching
-            val state by watching.state.collectAsState()
-            val activity = LocalContext.current as MainActivity
-            LaunchedEffect(state.playing, state.held) { activity.allowPip(state.playing && state.held == null) }
-            when {
-                inPip -> VideoSurface(watching, state, Modifier.fillMaxSize())
-                fullScreen -> Box(Modifier.fillMaxSize().background(Color.Black)) {
-                    Player(services, watching, state, navigator, route, fullScreen = true, Modifier.fillMaxSize())
+    } else {
+        VideoPage(services, entry, route, navigator, watching, state)
+    }
+}
+
+/** While YouTube answers: the frame, and whatever the list already said about the video. */
+@Composable
+private fun OpeningPage(services: Services, route: Route.Watch, navigator: Navigator, failed: Opening.Failed?, fullScreen: Boolean) {
+    val frame = @Composable { modifier: Modifier ->
+        Box(modifier.background(Color.Black), contentAlignment = Alignment.Center) {
+            AsyncImage(frameUrl(route.id), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            Box(Modifier.fillMaxSize().background(Color(0x99000000)))
+            if (failed == null) Label("loading…", Type.body)
+        }
+    }
+    if (fullScreen) {
+        frame(Modifier.fillMaxSize())
+        return
+    }
+    val preview = route.preview
+    Column(Modifier.fillMaxSize()) {
+        frame(Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+        Column(Modifier.padding(horizontal = Unit5 * 3, vertical = Unit5 * 2), verticalArrangement = Arrangement.spacedBy(Unit5 * 2)) {
+            if (failed != null) {
+                Panel {
+                    Label(failed.message, Type.problem)
+                    Row(horizontalArrangement = Arrangement.spacedBy(Unit5 * 2)) {
+                        ActionButton("Try again", services.playback::reload, primary = true)
+                        ActionButton("Back", { services.playback.close(); navigator.back() })
+                    }
                 }
-                else -> VideoPage(services, entry, route, navigator, watching, state)
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(Unit5)) {
+                if (preview != null) {
+                    Label(preview.title, Type.h2)
+                    videoMeta(preview.views, preview.uploaded).takeIf { it.isNotEmpty() }?.let { Label(it, Type.muted) }
+                } else {
+                    Bone(0.8f, 24.dp)
+                    Bone(0.4f, 19.dp)
+                }
+            }
+            val channel = preview?.channel?.takeIf { it.isNotEmpty() }
+            if (channel != null) {
+                Box(Modifier.height(Touch), contentAlignment = Alignment.CenterStart) {
+                    Label(channel, Type.link, Modifier.padding(horizontal = Unit5 * 2), maxLines = 1)
+                }
+            } else {
+                Bone(0.5f, Touch)
             }
         }
     }
 }
 
+/** A grey bar where text will be. */
 @Composable
-private fun Message(fullScreen: Boolean, content: @Composable () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().then(if (fullScreen) Modifier else Modifier.safeDrawingPadding()).padding(Unit5 * 4),
-        verticalArrangement = Arrangement.spacedBy(Unit5 * 3, Alignment.CenterVertically),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        content()
-    }
+private fun Bone(fraction: Float, height: androidx.compose.ui.unit.Dp) {
+    Box(Modifier.fillMaxWidth(fraction).height(height).padding(vertical = 3.dp).background(Palette.raised, Corner))
 }
 
 @OptIn(UnstableApi::class)
 @Composable
-private fun VideoSurface(watching: Watching, state: WatchingState, modifier: Modifier) {
+fun VideoSurface(watching: Watching, modifier: Modifier) {
+    val state by watching.state.collectAsState()
     AndroidView(
         factory = { context ->
             PlayerView(context).apply {
@@ -164,17 +209,18 @@ private fun Player(
 ) {
     val activity = LocalContext.current as MainActivity
     var controls by remember { mutableStateOf(true) }
+    var picker by remember { mutableStateOf<Picker?>(null) }
     var touched by remember { mutableIntStateOf(0) }
-    LaunchedEffect(touched, state.playing) {
-        if (!state.playing) {
-            controls = true
-            return@LaunchedEffect
-        }
+    var lastTap by remember { mutableLongStateOf(0L) }
+    // Pausing brings the controls up once; a tap can still put them away.
+    LaunchedEffect(state.playing) { if (!state.playing) controls = true }
+    LaunchedEffect(touched, state.playing, controls, picker) {
+        if (!controls || !state.playing || picker != null) return@LaunchedEffect
         delay(CONTROLS_HIDE_MS)
         controls = false
     }
     Box(modifier.background(Color.Black)) {
-        VideoSurface(watching, state, Modifier.fillMaxSize())
+        VideoSurface(watching, Modifier.fillMaxSize())
         val hold = state.held
         val blocking = state.ending != Ending.None || (hold != null && hold != Verdict.SignedOut)
         if (blocking && fullScreen) {
@@ -191,20 +237,35 @@ private fun Player(
         } else {
             Box(
                 Modifier.fillMaxSize().pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = {
-                            controls = !controls
-                            touched++
-                        },
-                        onDoubleTap = { offset ->
+                    // The first tap answers at once. A second one soon after is a double tap,
+                    // which seeks by ten seconds on the side it lands.
+                    detectTapGestures { offset ->
+                        val now = SystemClock.uptimeMillis()
+                        if (now - lastTap < DOUBLE_TAP_MS) {
                             watching.seekBy(if (offset.x < size.width / 2) -SEEK_STEP_MS else SEEK_STEP_MS)
-                            touched++
-                        },
-                    )
+                            controls = true
+                            lastTap = 0L
+                        } else {
+                            if (picker != null) picker = null else controls = !controls
+                            lastTap = now
+                        }
+                        touched++
+                    }
                 },
             )
-            if (controls) {
-                Controls(watching, state, fullScreen, onTouch = { touched++ }, onFullScreen = { activity.lockLandscape(!fullScreen) })
+            val open = picker
+            if (open != null) {
+                Choices(open, watching, state) {
+                    picker = null
+                    touched++
+                }
+            } else if (controls) {
+                Controls(
+                    services, watching, state, fullScreen,
+                    onTouch = { touched++ },
+                    onPick = { picker = it },
+                    onFullScreen = { activity.requestFullScreen(!fullScreen) },
+                )
             }
         }
     }
@@ -220,13 +281,25 @@ private fun holdLine(state: WatchingState): String = when {
 
 @Composable
 private fun BoxScope.Controls(
+    services: Services,
     watching: Watching,
     state: WatchingState,
     fullScreen: Boolean,
     onTouch: () -> Unit,
+    onPick: (Picker) -> Unit,
     onFullScreen: () -> Unit,
 ) {
     Box(Modifier.matchParentSize().background(Color(0x99000000)))
+    val edges = if (fullScreen) Modifier.safeDrawingPadding() else Modifier
+    // The session, quietly, and the settings for this video.
+    Row(
+        Modifier.align(Alignment.TopCenter).fillMaxWidth().then(edges).padding(start = Unit5 * 3, end = Unit5),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BudgetClock(services.budget, Modifier.weight(1f))
+        LinkButton(speedText(state.speed), { onPick(Picker.Speed) }, style = Type.body)
+        LinkButton(state.qualities.getOrNull(state.quality)?.label ?: "auto", { onPick(Picker.Quality) }, style = Type.body)
+    }
     Row(
         Modifier.align(Alignment.Center),
         horizontalArrangement = Arrangement.spacedBy(Unit5 * 4),
@@ -240,7 +313,7 @@ private fun BoxScope.Controls(
         Modifier
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
-            .then(if (fullScreen) Modifier.safeDrawingPadding() else Modifier)
+            .then(edges)
             .padding(horizontal = Unit5 * 3),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -250,6 +323,32 @@ private fun BoxScope.Controls(
             LinkButton(if (fullScreen) "exit full screen" else "full screen", onFullScreen, style = Type.body)
         }
         SeekBar(state.positionMs, state.durationMs, onSeek = { watching.seekTo(it); onTouch() })
+    }
+}
+
+/** Speed or quality, every option at once. Tapping beside them keeps what was there. */
+@Composable
+private fun BoxScope.Choices(picker: Picker, watching: Watching, state: WatchingState, onDone: () -> Unit) {
+    Box(Modifier.matchParentSize().background(Palette.scrim))
+    Column(
+        Modifier.align(Alignment.Center).fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(Unit5 * 2),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Label(if (picker == Picker.Speed) "Speed" else "Quality", Type.strong)
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = Unit5 * 3),
+            horizontalArrangement = Arrangement.spacedBy(Unit5 * 2),
+        ) {
+            when (picker) {
+                Picker.Speed -> SPEEDS.forEach { speed ->
+                    ActionButton(speedText(speed), { watching.setSpeed(speed); onDone() }, primary = speed == state.speed)
+                }
+                Picker.Quality -> state.qualities.forEachIndexed { index, quality ->
+                    ActionButton(quality.label, { watching.setQuality(index); onDone() }, primary = index == state.quality)
+                }
+            }
+        }
     }
 }
 
@@ -312,7 +411,7 @@ private fun HoldPanel(
             Label("That was the video.", Type.h2)
             status?.let { Label(afterVideoText(it), Type.muted) }
             if (next != null && status?.state == SessionState.OPEN) {
-                ActionButton("Next: ${next.title}", { navigator.open(Route.Watch(next.id, route.listId)) }, primary = true)
+                ActionButton("Next: ${next.title}", { navigator.open(Route.Watch(next.id, route.listId, preview = next)) }, primary = true)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(Unit5 * 2)) {
                 ActionButton("Back", navigator::back)
@@ -336,6 +435,17 @@ private fun afterVideoText(status: Status): String = when (status.state) {
     SessionState.CHOOSE -> "That's the session."
 }
 
+/** Shares the video as a YouTube link, to anything but this app. */
+private fun shareVideo(context: Context, id: String, title: String) {
+    val send = Intent(Intent.ACTION_SEND)
+        .setType("text/plain")
+        .putExtra(Intent.EXTRA_TEXT, "https://youtu.be/$id")
+        .putExtra(Intent.EXTRA_SUBJECT, title)
+    val chooser = Intent.createChooser(send, null)
+        .putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(ComponentName(context, MainActivity::class.java)))
+    context.startActivity(chooser)
+}
+
 /** Portrait: the video on top, the page below it. */
 @Composable
 private fun VideoPage(
@@ -347,6 +457,7 @@ private fun VideoPage(
     state: WatchingState,
 ) {
     val video = watching.streams.details
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var next by remember { mutableStateOf<Video?>(null) }
     var nextList by remember { mutableStateOf<String?>(null) }
@@ -367,11 +478,11 @@ private fun VideoPage(
         subscribed = runCatching { services.api.subscriptions().any { it.channelId == channelId } }.getOrNull()
     }
 
-    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+    Column(Modifier.fillMaxSize()) {
         Player(services, watching, state, navigator, route, fullScreen = false, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
         LazyColumn(
             state = entry.list,
-            contentPadding = PaddingValues(start = Unit5 * 3, end = Unit5 * 3, top = Unit5 * 2, bottom = Unit5 * 12),
+            contentPadding = PaddingValues(start = Unit5 * 3, end = Unit5 * 3, top = Unit5 * 2, bottom = Unit5 * 8),
             verticalArrangement = Arrangement.spacedBy(Unit5 * 2),
             modifier = Modifier.fillMaxSize(),
         ) {
@@ -396,13 +507,8 @@ private fun VideoPage(
             }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(Unit5 * 2), verticalAlignment = Alignment.CenterVertically) {
-                    ActionButton(speedText(state.speed), {
-                        watching.setSpeed(SPEEDS[(SPEEDS.indexOf(state.speed) + 1) % SPEEDS.size])
-                    })
-                    ActionButton(state.qualities.getOrNull(state.quality)?.label ?: "auto", {
-                        watching.setQuality((state.quality + 1) % state.qualities.size)
-                    })
                     ActionButton("+ playlist", { adding = !adding })
+                    ActionButton("share", { shareVideo(context, video.id, video.title) })
                 }
             }
             if (adding) {
@@ -413,11 +519,10 @@ private fun VideoPage(
                     ) { adding = false }
                 }
             }
-            item { BudgetClock(services.budget) }
             next?.let { nextVideo ->
                 item {
                     LinkButton("Next in ${nextList.orEmpty()}: ${nextVideo.title}", {
-                        navigator.open(Route.Watch(nextVideo.id, route.listId))
+                        navigator.open(Route.Watch(nextVideo.id, route.listId, preview = nextVideo))
                     })
                 }
             }
@@ -444,6 +549,53 @@ private fun VideoPage(
         }
     }
 }
+
+/**
+ * The open video, in a bar above the bottom navigation while you look elsewhere. Tapping it
+ * returns to its page; ✕ closes it.
+ */
+@Composable
+fun MiniPlayer(services: Services, navigator: Navigator) {
+    val opening by services.playback.current.collectAsState()
+    val current = opening ?: return
+    val last = navigator.lastWatch?.takeIf { it.id == current.id }
+    val watching = (current as? Opening.Ready)?.watching
+    val state = watching?.state?.collectAsState()?.value
+    val title = watching?.streams?.details?.title ?: last?.preview?.title ?: "Opening a video…"
+    val below = when {
+        current is Opening.Failed -> current.message
+        state == null -> "loading…"
+        state.ending != Ending.None || (state.held != null && state.held != Verdict.SignedOut) -> holdLine(state)
+        else -> watching.streams.details.channel
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.raised))
+        Tappable(
+            { navigator.open(last?.copy(startSeconds = null) ?: Route.Watch(current.id)) },
+            Modifier.fillMaxWidth().height(56.dp),
+            fill = Palette.surface,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.fillMaxHeight().aspectRatio(16f / 9f).background(Color.Black)) {
+                    if (watching != null) {
+                        VideoSurface(watching, Modifier.fillMaxSize())
+                    } else {
+                        AsyncImage(frameUrl(current.id), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                    }
+                }
+                Column(Modifier.weight(1f).padding(horizontal = Unit5 * 2)) {
+                    Label(title, Type.strong, maxLines = 1)
+                    Label(below, if (current is Opening.Failed) Type.problem else Type.muted, maxLines = 1)
+                }
+                if (watching != null && state != null && state.ending == Ending.None) {
+                    LinkButton(if (state.playing) "pause" else "play", watching::toggle, style = Type.strong)
+                }
+                LinkButton("✕", services.playback::close, Modifier.width(Touch), style = Type.strong)
+            }
+        }
+    }
+}
+
 
 /** A panel that opens when its heading is tapped. Its content only loads once it's open. */
 @Composable

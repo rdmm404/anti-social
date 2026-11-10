@@ -12,7 +12,7 @@ The Channels tab lists the channels you subscribe to. A channel's page shows its
 ## How to get to it (user POV)
 
 - TV: the channels tab, or the channel name under a playing video.
-- Phone: the same tabs by touch. _Not built yet._
+- Phone: the same sections from the bottom bar.
 
 ## Driving it with scripts/verify
 

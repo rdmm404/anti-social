@@ -6,26 +6,29 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Bundle
+import android.provider.Settings
+import android.view.OrientationEventListener
 import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -37,7 +40,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -48,6 +54,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.voltr.antisocial.core.Link
 import org.voltr.antisocial.core.SessionState
+import org.voltr.antisocial.core.Video
 import org.voltr.antisocial.core.parseYouTubeLink
 import org.voltr.antisocial.core.sharedLink
 
@@ -60,7 +67,13 @@ sealed interface Route {
     data class Playlists(val importing: String? = null) : Route
     data class PlaylistPage(val id: Int) : Route
     data object History : Route
-    data class Watch(val id: String, val listId: Int? = null, val startSeconds: Int? = null) : Route
+    /** [preview] is what the list already knew about the video, shown while it opens. */
+    data class Watch(
+        val id: String,
+        val listId: Int? = null,
+        val startSeconds: Int? = null,
+        val preview: Video? = null,
+    ) : Route
 }
 
 /** A place in the back stack. It keeps what it loaded and where it was scrolled, so Back is instant. */
@@ -73,9 +86,16 @@ class Entry(val route: Route) {
 class Navigator(val stack: SnapshotStateList<Entry>) {
     val top get() = stack.last()
 
+    /** The video page opened last, so the mini-player can lead back to it. */
+    var lastWatch by mutableStateOf<Route.Watch?>(null)
+        private set
+
     fun open(route: Route) {
         // One video page at a time: opening another replaces it, wherever it was.
-        if (route is Route.Watch) stack.removeAll { it.route is Route.Watch }
+        if (route is Route.Watch) {
+            stack.removeAll { it.route is Route.Watch }
+            lastWatch = route
+        }
         stack.add(Entry(route))
     }
 
@@ -104,6 +124,23 @@ class MainActivity : ComponentActivity() {
     private var inPip by mutableStateOf(false)
     private var landscape by mutableStateOf(false)
 
+    /** The way the full screen button turned the screen, until the phone itself agrees: true sideways, false upright. */
+    private var turning: Boolean? = null
+    private val tilt by lazy {
+        object : OrientationEventListener(this) {
+            override fun onOrientationChanged(degrees: Int) {
+                if (degrees == ORIENTATION_UNKNOWN) return
+                val sideways = degrees in 60..120 || degrees in 240..300
+                val upright = degrees <= 30 || degrees >= 330
+                when (turning) {
+                    true -> if (sideways) followSensor()
+                    false -> if (upright) followSensor()
+                    null -> disable()
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Android 15+ draws behind the system bars regardless, so the content pads itself. The app
         // is always dark, so the bars keep light icons even when the phone is in light mode.
@@ -128,6 +165,11 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handle(intent)
+    }
+
+    override fun onDestroy() {
+        tilt.disable()
+        super.onDestroy()
     }
 
     /** A YouTube link tapped elsewhere, or text shared with the app. */
@@ -156,12 +198,32 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Asked by the player's full screen button: turn sideways, or back to following the phone. */
-    fun lockLandscape(lock: Boolean) {
-        requestedOrientation = if (lock) {
+    /**
+     * The player's full screen button. It turns the screen whichever way the phone is held, and
+     * holds it there until the phone is turned to match, then follows the phone again: turning
+     * back upright leaves full screen, as on YouTube. With auto-rotate off it holds until asked again.
+     */
+    fun requestFullScreen(full: Boolean) {
+        requestedOrientation = if (full) {
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         } else {
-            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+        val autoRotate = Settings.System.getInt(contentResolver, Settings.System.ACCELEROMETER_ROTATION, 1) == 1
+        if (autoRotate && tilt.canDetectOrientation()) {
+            turning = full
+            tilt.enable()
+        } else {
+            turning = null
+        }
+    }
+
+    /** Back to following the phone, as every page but the video's does. */
+    fun followSensor() {
+        turning = null
+        tilt.disable()
+        if (requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -214,6 +276,7 @@ private fun Root(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun App(
     services: Services,
@@ -224,54 +287,96 @@ private fun App(
 ) {
     val budget = services.budget
     val status by budget.status.collectAsState()
+    val activity = LocalContext.current as MainActivity
     val entry = navigator.top
     val route = entry.route
+    val onWatch = route is Route.Watch
     BackHandler(enabled = navigator.stack.size > 1) { navigator.back() }
 
-    // The video lives as long as its page is in the stack, and pauses while another page covers it.
-    val watchRoute = navigator.stack.lastOrNull { it.route is Route.Watch }?.route as Route.Watch?
-    LaunchedEffect(watchRoute?.id) { if (watchRoute == null) services.playback.close() }
-    LaunchedEffect(route is Route.Watch) { if (route !is Route.Watch) services.playback.pause() }
-    val fullScreen = route is Route.Watch && landscape && !inPip
+    // The video plays on wherever you go, in the mini-player, until it's closed or another opens.
+    val opening by services.playback.current.collectAsState()
+    val watching = (opening as? Opening.Ready)?.watching
+    if (watching != null) {
+        key(watching) {
+            val state by watching.state.collectAsState()
+            LaunchedEffect(state.playing, state.held) { activity.allowPip(state.playing && state.held == null) }
+        }
+    } else {
+        LaunchedEffect(Unit) { activity.allowPip(false) }
+    }
+    LaunchedEffect(onWatch) { if (!onWatch) activity.followSensor() }
+    val fullScreen = onWatch && landscape && !inPip
     LaunchedEffect(fullScreen) { setFullScreen(fullScreen) }
 
-    if (route is Route.Watch) {
-        key(entry) {
-            WatchScreen(services, entry, route, navigator, inPip, fullScreen)
+    if (inPip) {
+        if (watching != null) {
+            VideoSurface(watching, Modifier.fillMaxSize())
+        } else {
+            Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black))
         }
         return
     }
+    if (fullScreen) {
+        key(entry) { WatchScreen(services, entry, route as Route.Watch, navigator, fullScreen = true) }
+        return
+    }
 
+    // The keyboard covers the bottom bar, as it would on YouTube, rather than pushing it up.
+    val typing = WindowInsets.isImeVisible
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-        TopBar(services, route, navigator)
-        val state = status?.state
-        // Browsing only exists inside a session, and the page returns when one opens.
-        val gated = route != Route.History && state != null && state != SessionState.OPEN
-        Box(Modifier.fillMaxSize().padding(horizontal = Unit5 * 3)) {
-            when {
-                gated -> SessionGate(budget, Modifier.padding(top = Unit5 * 2))
-                // Nothing yet, rather than a search box that may be about to vanish.
-                route == Route.Search && state == null -> Unit
-                else -> key(entry) {
-                    when (route) {
-                        Route.Search -> HomeScreen(services, navigator)
-                        is Route.SearchResults -> SearchResultsScreen(services, entry, route.query, navigator)
-                        Route.Channels -> ChannelsScreen(services, entry, navigator)
-                        is Route.Channel -> ChannelScreen(services, entry, route.id, navigator)
-                        is Route.Playlists -> PlaylistsScreen(services, entry, route.importing, navigator)
-                        is Route.PlaylistPage -> PlaylistScreen(services, entry, route.id, navigator)
-                        Route.History -> HistoryScreen(services, entry, navigator)
-                        is Route.Watch -> Unit
+        if (!onWatch) TopBar(services, navigator)
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (route is Route.Watch) {
+                key(entry) { WatchScreen(services, entry, route, navigator, fullScreen = false) }
+            } else {
+                val state = status?.state
+                // Browsing only exists inside a session, and the page returns when one opens.
+                val gated = route != Route.History && state != null && state != SessionState.OPEN
+                Box(Modifier.fillMaxSize().padding(horizontal = Unit5 * 3)) {
+                    when {
+                        gated -> SessionGate(budget, Modifier.padding(top = Unit5 * 2))
+                        // Nothing yet, rather than a search box that may be about to vanish.
+                        route == Route.Search && state == null -> Unit
+                        else -> key(entry) {
+                            when (route) {
+                                Route.Search -> HomeScreen(services, navigator)
+                                is Route.SearchResults -> SearchResultsScreen(services, entry, route.query, navigator)
+                                Route.Channels -> ChannelsScreen(services, entry, navigator)
+                                is Route.Channel -> ChannelScreen(services, entry, route.id, navigator)
+                                is Route.Playlists -> PlaylistsScreen(services, entry, route.importing, navigator)
+                                is Route.PlaylistPage -> PlaylistScreen(services, entry, route.id, navigator)
+                                Route.History -> HistoryScreen(services, entry, navigator)
+                                is Route.Watch -> Unit
+                            }
+                        }
                     }
                 }
             }
         }
+        if (!typing) {
+            if (!onWatch && opening != null) MiniPlayer(services, navigator)
+            BottomNav(route, navigator)
+        }
     }
 }
 
+/** The icon, the time left in the middle, and the server's settings page. */
 @Composable
-private fun TopBar(services: Services, current: Route, navigator: Navigator) {
+private fun TopBar(services: Services, navigator: Navigator) {
     val context = LocalContext.current
+    Box(Modifier.fillMaxWidth().height(Touch).padding(horizontal = Unit5 * 2)) {
+        Tappable({ navigator.openSection(Route.Search) }, Modifier.align(Alignment.CenterStart).size(Touch), contentAlignment = Alignment.Center) {
+            Image(painterResource(R.mipmap.ic_launcher), contentDescription = "anti-social", modifier = Modifier.size(28.dp).clip(Corner))
+        }
+        BudgetClock(services.budget, Modifier.align(Alignment.Center))
+        // Limits, devices and the week, in the browser's session.
+        LinkButton("settings", { openCustomTab(context, BuildConfig.SERVER_URL) }, Modifier.align(Alignment.CenterEnd), style = Type.muted)
+    }
+}
+
+/** The four sections, at the bottom where a thumb reaches them. */
+@Composable
+private fun BottomNav(current: Route, navigator: Navigator) {
     val active = when (current) {
         Route.Search, is Route.SearchResults -> Route.Search
         Route.Channels, is Route.Channel -> Route.Channels
@@ -279,29 +384,22 @@ private fun TopBar(services: Services, current: Route, navigator: Navigator) {
         Route.History -> Route.History
         is Route.Watch -> null
     }
-    Column(Modifier.fillMaxWidth().padding(horizontal = Unit5 * 3)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Label("anti-social", Type.strong, maxLines = 1)
-            Spacer(Modifier.width(Unit5 * 2))
-            BudgetClock(services.budget, Modifier.weight(1f))
-            // The server's settings page: limits, devices and the week, in the browser's session.
-            LinkButton("settings", { openCustomTab(context, BuildConfig.SERVER_URL) }, style = Type.muted)
-        }
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(Unit5),
-        ) {
+    Column(Modifier.fillMaxWidth().background(Palette.surface)) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.raised))
+        Row(Modifier.fillMaxWidth()) {
             listOf(
                 Route.Search to "search",
                 Route.Channels to "channels",
                 Route.Playlists() to "playlists",
                 Route.History to "history",
             ).forEach { (route, name) ->
-                LinkButton(
-                    name,
+                Tappable(
                     { navigator.openSection(route) },
-                    style = if (route == active) Type.strong.copy(color = Palette.accent) else Type.muted,
-                )
+                    Modifier.weight(1f).height(Touch + Unit5 * 2),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Label(name, if (route == active) Type.strong.copy(color = Palette.accent) else Type.muted, maxLines = 1)
+                }
             }
         }
     }
