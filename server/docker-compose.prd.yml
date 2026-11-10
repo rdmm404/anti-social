@@ -2,6 +2,8 @@
 # until every client has moved. It uses the homelab's shared Postgres (svc-postgres-db on
 # postgres-network) with its own role and database. server/.env holds ANTI_SOCIAL_TOKEN and
 # ANTI_SOCIAL_DATABASE_URL and is never committed.
+name: app-anti-social-server
+
 services:
   server:
     container_name: svc-anti-social-server
