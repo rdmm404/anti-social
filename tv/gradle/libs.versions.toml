@@ -23,6 +23,7 @@ media3-dash = { module = "androidx.media3:media3-exoplayer-dash", version.ref = 
 media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3" }
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
 coil-okhttp = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
+zxing-core = { module = "com.google.zxing:core", version = "3.5.3" }
 junit = { module = "junit:junit", version = "4.13.2" }
 robolectric = { module = "org.robolectric:robolectric", version = "4.16" }
 desugar = { module = "com.android.tools:desugar_jdk_libs_nio", version = "2.1.5" }

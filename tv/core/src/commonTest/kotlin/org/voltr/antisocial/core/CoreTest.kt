@@ -235,6 +235,34 @@ class WatchTest {
 
 class ApiTest {
     @Test
+    fun `pairing hands over a token once approved`() = runTest {
+        val replies = ArrayDeque(listOf(
+            """{"code":"ABCD-EFGH","secret":"s3cret","expires_at":1700000600.5,"poll_every":3}""",
+            """{"state":"waiting"}""",
+            """{"state":"paired","token":"new-token"}""",
+        ))
+        val bodies = mutableListOf<String>()
+        val api = Api("http://server/", null, HttpClient(MockEngine { request ->
+            bodies += "${request.url.encodedPath} ${(request.body as TextContent).text}"
+            respond(replies.removeFirst(), HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+        }))
+        val started = api.startPairing("Fire TV")
+        assertEquals(PairingStarted("ABCD-EFGH", "s3cret", 1700000600.5, 3), started)
+        assertEquals(null, api.claimPairing(started.secret))
+        assertEquals("new-token", api.claimPairing(started.secret))
+        assertEquals(
+            listOf(
+                """/api/pairings {"name":"Fire TV"}""",
+                """/api/pairings/claim {"secret":"s3cret"}""",
+                """/api/pairings/claim {"secret":"s3cret"}""",
+            ),
+            bodies,
+        )
+        assertEquals("http://server/pair?code=ABCD-EFGH", api.pairUrl("ABCD-EFGH"))
+        assertEquals("http://server/pair", api.pairUrl())
+    }
+
+    @Test
     fun `reads status, ignoring fields it doesn't know`() = runTest {
         val api = Api("http://server/", "tok", HttpClient(MockEngine { request ->
             assertEquals("http://server/api/status", request.url.toString())

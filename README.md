@@ -88,8 +88,14 @@ check in about every 15 seconds while a video plays. Each check-in is charged, a
 says whether to go on for another minute. The Python server keeps running until every client
 has moved over (see `docs/plan-hosted.md`).
 
-Tools come from `mise.toml`: Go, dbmate and Java. `.env` holds the device token
+Tools come from `mise.toml`: Go, dbmate and Java. `.env` holds the owner's token
 (`ANTI_SOCIAL_TOKEN`, made with `openssl rand -hex 32`) and is never committed.
+
+That token is the account's first device, and it signs in the settings page. Every other
+device pairs (ADR 0004): it shows a code and a QR code linking to `/pair?code=...`, you
+approve it there while signed in, and it gets a token of its own. The settings page lists
+devices, and removing one signs it out. A browser that signs in is a device too, with its own
+token in the cookie, so signing out revokes it.
 
 ```sh
 mise run db       # Postgres 18 in Podman or Docker, on 127.0.0.1:55432
@@ -105,7 +111,7 @@ see SQL or HTTP:
 | --- | --- |
 | `budget` | Budget days, sessions, check-ins, limits with cooling-off, history |
 | `library` | Subscriptions and playlists |
-| `accounts` | Devices and their tokens |
+| `accounts` | Devices, their tokens, and pairing |
 | `<domain>/postgres` | Its storage in Postgres, with raw pgx queries returning the domain's types |
 | `<domain>/memory` | The same storage in memory, for tests |
 | `<domain>/api` | Its JSON API: wire types, handlers, and mapping to and from the domain's types |
@@ -126,7 +132,7 @@ database, fix it with a new migration instead of editing it.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ANTI_SOCIAL_DATABASE_URL` | required | Postgres connection string |
-| `ANTI_SOCIAL_TOKEN` | required | The device token, at least 32 characters. Changing it signs out every device. |
+| `ANTI_SOCIAL_TOKEN` | required | The owner's token, at least 32 characters. Changing it signs out whoever used the old one; paired devices stay. |
 | `ANTI_SOCIAL_ADDR` | `:8080` | Listen address |
 | `TZ` | system | Zone the budget day is counted in |
 | `ANTI_SOCIAL_DAY_START` | `4` | Local hour when the daily budget resets |
@@ -158,8 +164,9 @@ adb connect <tv-ip>:5555
 adb install -r tv/build/outputs/apk/release/tv-release.apk
 ```
 
-On first start the app asks for the device token. Typing it with the remote is slow, so open
-the field and run `adb shell input text <token>`. Debug builds can carry one instead, with
+On first start the app shows a pairing code and a QR code. Scan it with a phone signed in to
+the settings page, or open `/pair` there and type the code, and approve. The TV signs in by
+itself a few seconds later. Debug builds can carry a token instead, with
 `-PantiSocialToken=...`. Release builds never do, because they're published.
 
 It needs JDK 21 and the Android SDK (`ANDROID_HOME`, which `mise.toml` sets). Local builds are

@@ -15,7 +15,8 @@ import (
 type Config struct {
 	Addr        string
 	DatabaseURL string
-	// The device token, until accounts and pairing exist (ADR 0004).
+	// The first device's token. It signs in the settings page, which approves the rest by
+	// pairing (ADR 0004).
 	Token        string
 	Location     *time.Location
 	DayStartHour int

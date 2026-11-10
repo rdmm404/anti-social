@@ -12,6 +12,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,7 +37,7 @@ type client struct {
 func setup(t *testing.T) *client {
 	t.Helper()
 	t.Parallel()
-	accts := accounts.NewService(accountsmem.New())
+	accts := accounts.NewService(accountsmem.New(), nil)
 	account, err := accts.EnsureOwner(context.Background(), map[string]string{"test": token})
 	if err != nil {
 		t.Fatal(err)
@@ -219,31 +220,60 @@ func TestSettingsOverHTTP(t *testing.T) {
 	c.expect("GET", "/api/history/videos?start='; drop", nil, 400)
 }
 
+// browser is a cookie-keeping client for the settings page. Its forms say they're same-origin,
+// as a browser would.
+type browser struct {
+	t      *testing.T
+	base   string
+	client *http.Client
+}
+
+func newBrowser(c *client) *browser {
+	jar, _ := cookiejar.New(nil)
+	return &browser{c.t, c.server.URL, &http.Client{Jar: jar}}
+}
+
+func (b *browser) get(path string) string {
+	b.t.Helper()
+	res, err := b.client.Get(b.base + path)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	return string(body)
+}
+
+func (b *browser) post(path string, form url.Values) string {
+	b.t.Helper()
+	req, _ := http.NewRequest("POST", b.base+path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	res, err := b.client.Do(req)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	return string(body)
+}
+
+// cookie is the token this browser holds.
+func (b *browser) cookie() string {
+	u, _ := url.Parse(b.base)
+	for _, c := range b.client.Jar.Cookies(u) {
+		if c.Name == "anti_social_token" {
+			return c.Value
+		}
+	}
+	return ""
+}
+
 func TestSettingsPageSignsInWithTheToken(t *testing.T) {
 	c := setup(t)
-	jar, _ := cookiejar.New(nil)
-	browser := &http.Client{Jar: jar}
-	get := func() string {
-		res, err := browser.Get(c.server.URL + "/")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer res.Body.Close()
-		b, _ := io.ReadAll(res.Body)
-		return string(b)
-	}
-	post := func(path string, form url.Values) string {
-		req, _ := http.NewRequest("POST", c.server.URL+path, strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-		res, err := browser.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer res.Body.Close()
-		b, _ := io.ReadAll(res.Body)
-		return string(b)
-	}
+	b := newBrowser(c)
+	get := func() string { return b.get("/") }
+	post := b.post
 
 	if page := get(); !strings.Contains(page, "Sign in") {
 		t.Fatalf("signed out: %s", page)
@@ -267,13 +297,94 @@ func TestSettingsPageSignsInWithTheToken(t *testing.T) {
 	req, _ := http.NewRequest("POST", c.server.URL+"/settings", strings.NewReader("daily_minutes=1"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	res, _ := browser.Do(req)
+	res, _ := b.client.Do(req)
 	if res.StatusCode != 403 {
 		t.Fatalf("cross-site form: %d", res.StatusCode)
 	}
 
+	// The browser holds a token of its own, not the one it signed in with, and signing out
+	// revokes it.
+	own := b.cookie()
+	if own == "" || own == token {
+		t.Fatalf("cookie holds %q", own)
+	}
 	if page := post("/sign-out", nil); !strings.Contains(page, "Sign in") {
 		t.Fatalf("signed out again: %s", page)
+	}
+	c.token = own
+	c.expect("GET", "/api/status", nil, 401)
+	c.token = token
+	c.expect("GET", "/api/status", nil, 200)
+}
+
+func TestATVPairsThroughTheSettingsPage(t *testing.T) {
+	c := setup(t)
+	tv := &client{t, c.server, ""}
+	started := tv.expect("POST", "/api/pairings", map[string]string{"name": "Fire TV"}, 201)
+	code, secret := started["code"].(string), started["secret"].(string)
+	if len(code) != 9 || code[4] != '-' || len(secret) != 64 {
+		t.Fatalf("started: %v", started)
+	}
+	claim := map[string]string{"secret": secret}
+	if out := tv.expect("POST", "/api/pairings/claim", claim, 200); out["state"] != "waiting" || out["token"] != nil {
+		t.Fatalf("before approval: %v", out)
+	}
+
+	// The QR code's link, signed out: sign in, then back to approve.
+	b := newBrowser(c)
+	page := b.get("/pair?code=" + code)
+	if !strings.Contains(page, "Sign in") || !strings.Contains(page, `name="next" value="/pair?code=`+code) {
+		t.Fatalf("signed out: %s", page)
+	}
+	page = b.post("/sign-in", url.Values{"token": {token}, "next": {"/pair?code=" + code}})
+	if !strings.Contains(page, "Pair a device") || !strings.Contains(page, `value="`+code+`"`) {
+		t.Fatalf("after signing in: %s", page)
+	}
+	if page := b.post("/pair", url.Values{"code": {"ZZZZ-ZZZZ"}}); !strings.Contains(page, "No device is waiting") {
+		t.Fatalf("wrong code: %s", page)
+	}
+	// Typed by hand: lower case, no dash.
+	page = b.post("/pair", url.Values{"code": {strings.ToLower(strings.ReplaceAll(code, "-", ""))}})
+	if !strings.Contains(page, "Fire TV is paired") {
+		t.Fatalf("approved: %s", page)
+	}
+
+	out := tv.expect("POST", "/api/pairings/claim", claim, 200)
+	tv.token, _ = out["token"].(string)
+	if out["state"] != "paired" || len(tv.token) != 64 {
+		t.Fatalf("claimed: %v", out)
+	}
+	tv.expect("GET", "/api/status", nil, 200)
+	// Handed over once.
+	tv.expect("POST", "/api/pairings/claim", claim, 404)
+
+	// It's listed, and removing it from the page signs it out.
+	page = b.get("/")
+	if !strings.Contains(page, "<strong>Fire TV</strong>") {
+		t.Fatalf("devices: %s", page)
+	}
+	id := regexp.MustCompile(`/devices/(\d+)/remove`).FindAllStringSubmatch(page, -1)
+	if len(id) != 2 { // the TV and this browser; the configured token has no button
+		t.Fatalf("remove buttons: %v", id)
+	}
+	b.post("/devices/"+id[1][1]+"/remove", nil)
+	tv.expect("GET", "/api/status", nil, 401)
+}
+
+func TestPairingRefusesTheAfterSignInRedirectOffSite(t *testing.T) {
+	c := setup(t)
+	b := newBrowser(c)
+	req, _ := http.NewRequest("POST", c.server.URL+"/sign-in",
+		strings.NewReader(url.Values{"token": {token}, "next": {"//evil.example/pair"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	b.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	res, err := b.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Header.Get("Location"); got != "/" {
+		t.Fatalf("redirected to %q", got)
 	}
 }
 

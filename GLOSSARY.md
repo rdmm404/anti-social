@@ -37,4 +37,4 @@ _Avoid_: User, profile
 An installed client that has joined an account and holds its own token.
 
 **Pairing code**:
-A short-lived code, made by a device already in an account, that lets another device join it.
+A short-lived code shown by a device that wants to join an account. A device already in the account approves it.

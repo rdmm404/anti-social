@@ -8,7 +8,7 @@ How to get from the self-hosted server to the design in ADRs 0001-0004. The firs
 
 - Port the ledger: budget days, interval merging so each second is charged once, sessions, slots, samples, settings with cooling-off. `src/anti_social/ledger.py` and `tests/test_core.py` are the spec: turn the tests into Go tests first, and change only what ADR 0001 changes (charging reported, not delivered, seconds).
 - Check-ins with a server-set expiry.
-- Every request carries a device token, checked against one static token in config. Multi-user later changes only how tokens are looked up.
+- Every request carries a device token. One account: its first device is a static token in config, which signs in the settings page; other devices pair by showing a code that the settings page approves (ADR 0004), and get tokens of their own. Multi-user later adds account creation; devices and pairing already exist.
 - Settings: an API to read and change them (daily minutes, session gap, SponsorBlock categories), with cooling-off for looser values. A small settings page served by the server, using `html/template` and a little JS, signed into once with the token and remembered in a cookie.
 - Postgres from the start, run with Docker Compose in the homelab, so going public later is a connection string, not a migration.
 
@@ -48,7 +48,8 @@ Done when the extension works in a desktop Chromium browser, including the budge
 
 ## 6. Multi-user and go-live prep
 
-- Accounts, devices and pairing from ADR 0004, then mark it accepted or revise it.
+- Account creation and recovery from ADR 0004 (devices and pairing came in milestone 1), then mark it accepted or revise it.
+- Decide how long the server keeps readable watch history. ADR 0004 says it never holds one, but since milestone 1 it keeps titles per day for the History tab.
 - Move my own data into a real account.
 - Self-hosting docs, the SponsorBlock credit, and whether the extension goes in the Chrome Web Store.
 

@@ -60,7 +60,8 @@ CREATE TABLE public.devices (
     account_id bigint NOT NULL,
     token_hash bytea NOT NULL,
     name text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    configured boolean DEFAULT false NOT NULL
 );
 
 
@@ -81,6 +82,39 @@ CREATE SEQUENCE public.devices_id_seq
 --
 
 ALTER SEQUENCE public.devices_id_seq OWNED BY public.devices.id;
+
+
+--
+-- Name: pairings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.pairings (
+    id bigint NOT NULL,
+    code text NOT NULL,
+    secret_hash bytea NOT NULL,
+    name text NOT NULL,
+    account_id bigint,
+    expires_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: pairings_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.pairings_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: pairings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.pairings_id_seq OWNED BY public.pairings.id;
 
 
 --
@@ -268,6 +302,13 @@ ALTER TABLE ONLY public.devices ALTER COLUMN id SET DEFAULT nextval('public.devi
 
 
 --
+-- Name: pairings id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pairings ALTER COLUMN id SET DEFAULT nextval('public.pairings_id_seq'::regclass);
+
+
+--
 -- Name: pending_changes id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -310,6 +351,30 @@ ALTER TABLE ONLY public.devices
 
 ALTER TABLE ONLY public.devices
     ADD CONSTRAINT devices_token_hash_key UNIQUE (token_hash);
+
+
+--
+-- Name: pairings pairings_code_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pairings
+    ADD CONSTRAINT pairings_code_key UNIQUE (code);
+
+
+--
+-- Name: pairings pairings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pairings
+    ADD CONSTRAINT pairings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: pairings pairings_secret_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pairings
+    ADD CONSTRAINT pairings_secret_hash_key UNIQUE (secret_hash);
 
 
 --
@@ -397,6 +462,14 @@ CREATE INDEX sessions_account_day ON public.sessions USING btree (account_id, da
 
 ALTER TABLE ONLY public.devices
     ADD CONSTRAINT devices_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
+
+
+--
+-- Name: pairings pairings_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pairings
+    ADD CONSTRAINT pairings_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
 
 
 --

@@ -65,6 +65,7 @@ func handler(s services) http.Handler {
 	auth := func(next http.HandlerFunc) http.HandlerFunc { return accountsapi.Authenticated(s.accounts, next) }
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
+	accountsapi.New(s.accounts).Register(mux)
 	budgetapi.New(s.budget).Register(mux, auth)
 	libraryapi.New(s.library).Register(mux, auth)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) { httpapi.NotFound(w) })
@@ -87,7 +88,7 @@ func run() error {
 	defer pool.Close()
 
 	s := services{
-		accounts: accounts.NewService(accountspg.New(pool)),
+		accounts: accounts.NewService(accountspg.New(pool), nil),
 		budget:   budget.NewService(budgetpg.New(pool), budgetConfig(cfg), nil),
 		library:  library.NewService(librarypg.New(pool), nil),
 	}

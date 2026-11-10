@@ -72,7 +72,7 @@ func forEach(t *testing.T, test func(t *testing.T, f *fixture)) {
 		t.Parallel()
 		pool := testdb.Optional(t)
 		ctx := context.Background()
-		account, err := accounts.NewService(accountspg.New(pool)).EnsureOwner(ctx, map[string]string{"test": "token"})
+		account, err := accounts.NewService(accountspg.New(pool), nil).EnsureOwner(ctx, map[string]string{"test": "token"})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -1,111 +1,133 @@
 package org.voltr.antisocial.tv
 
+import android.os.Build
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.common.BitMatrix
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import kotlinx.coroutines.delay
 import org.voltr.antisocial.core.ApiError
+import org.voltr.antisocial.core.PairingStarted
 
 /**
- * Joins this TV to the server with its device token. Typing one on a remote is slow; pasting
- * works with `adb shell input text <token>` while the field is open.
+ * Joins this TV to the account without typing anything on the remote (ADR 0004). The TV shows
+ * a code and a QR code; a signed-in phone or browser approves it on the settings page, and the
+ * TV picks up a token of its own. Codes expire, so a new one replaces it every 10 minutes.
  */
 @Composable
 fun SignInScreen(services: Services, onSignedIn: () -> Unit) {
-    var editing by remember { mutableStateOf(false) }
-    var token by remember { mutableStateOf("") }
+    var pairing by remember { mutableStateOf<PairingStarted?>(null) }
     var problem by remember { mutableStateOf<String?>(null) }
-    var checking by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val keyboard = LocalSoftwareKeyboardController.current
-    val field = remember { FocusRequester() }
-    val button = remember { FocusRequester() }
 
-    fun submit() {
-        val candidate = token.trim()
-        keyboard?.hide()
-        editing = false
-        if (candidate.isEmpty() || checking) return
-        checking = true
-        scope.launch {
-            val previous = services.api.token
-            services.api.token = candidate
-            try {
-                services.api.status()
-                services.signIn(candidate)
-                services.budget.refresh()
+    LaunchedEffect(Unit) {
+        while (true) {
+            val token = try {
+                val started = services.api.startPairing(deviceName())
+                pairing = started
                 problem = null
-                onSignedIn()
+                waitForApproval(services, started)
             } catch (e: ApiError) {
-                services.api.token = previous
-                problem = if (e.signedOut) "The server doesn't know that token." else e.message
-            } finally {
-                checking = false
+                problem = e.message
+                null
             }
+            if (token != null) {
+                services.signIn(token)
+                services.budget.refresh()
+                onSignedIn()
+                return@LaunchedEffect
+            }
+            // Expired, or the server is down: show the problem and try again shortly.
+            if (problem != null) delay(RETRY_MS)
         }
     }
 
     Column(
-        Modifier.widthIn(max = 720.dp).padding(Unit5 * 8),
+        Modifier.widthIn(max = 900.dp).padding(Unit5 * 8),
         verticalArrangement = Arrangement.spacedBy(Unit5 * 4),
     ) {
         Label("anti-social", Type.h1)
         Panel {
-            Label("Sign in", Type.h2)
-            Label("Enter this TV's device token for ${BuildConfig.SERVER_URL}.", Type.muted)
-            if (editing) {
-                BasicTextField(
-                    value = token,
-                    onValueChange = { token = it },
-                    singleLine = true,
-                    textStyle = Type.body,
-                    cursorBrush = SolidColor(Palette.accent),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { submit() }),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(field)
-                        .background(Palette.raised, Corner)
-                        .padding(Unit5 * 3),
-                )
-                LaunchedEffect(Unit) {
-                    field.requestFocus()
-                    keyboard?.show()
-                }
-            } else {
-                Focusable({ editing = true }, Modifier.fillMaxWidth().focusRequester(button), fill = Palette.raised) {
-                    Label(
-                        if (token.isEmpty()) "Device token" else "•".repeat(token.length.coerceAtMost(40)),
-                        if (token.isEmpty()) Type.muted else Type.body,
-                        Modifier.padding(Unit5 * 3),
-                        maxLines = 1,
-                    )
-                }
-                ActionButton(if (checking) "Checking…" else "Sign in", { submit() }, primary = true)
-                LaunchedEffect(Unit) { button.requestFocus() }
+            val current = pairing
+            if (current == null) {
+                Label(problem ?: "Getting a code…", if (problem != null) Type.problem else Type.muted)
+                return@Panel
             }
-            problem?.let { Label(it, Type.problem) }
+            val url = services.api.pairUrl(current.code)
+            Row(horizontalArrangement = Arrangement.spacedBy(Unit5 * 6), verticalAlignment = Alignment.CenterVertically) {
+                val matrix = remember(url) { qrCode(url) }
+                QrCode(matrix, Modifier.size(QR_SIZE))
+                Column(verticalArrangement = Arrangement.spacedBy(Unit5 * 2)) {
+                    Label("Scan this with a phone that's signed in, and approve.", Type.body)
+                    Label("Or open ${services.api.pairUrl()} and enter:", Type.muted)
+                    Label(current.code, Type.h1.copy(fontSize = 40.sp, lineHeight = 48.sp, letterSpacing = 0.1.em))
+                    Label(problem ?: "Waiting for approval…", if (problem != null) Type.problem else Type.muted)
+                }
+            }
         }
     }
 }
+
+/** Polls until the code is approved (the token), or until it expires (null). */
+private suspend fun waitForApproval(services: Services, pairing: PairingStarted): String? {
+    val every = pairing.pollEvery.coerceAtLeast(1) * 1000L
+    while (true) {
+        delay(every)
+        try {
+            services.api.claimPairing(pairing.secret)?.let { return it }
+        } catch (e: ApiError) {
+            if (e.code == 404) return null
+            // A blip mid-wait doesn't lose the code; the next poll tries again.
+            if (!e.unreachable) throw e
+        }
+    }
+}
+
+private fun deviceName(): String =
+    if (Build.MANUFACTURER.equals("Amazon", ignoreCase = true)) "Fire TV" else Build.MODEL.ifBlank { "TV" }
+
+private fun qrCode(text: String): BitMatrix =
+    QRCodeWriter().encode(
+        text, BarcodeFormat.QR_CODE, 0, 0,
+        mapOf(EncodeHintType.MARGIN to 0, EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M),
+    )
+
+/** Dark modules on a light square, with the quiet zone scanners need. */
+@Composable
+private fun QrCode(matrix: BitMatrix, modifier: Modifier) {
+    Canvas(modifier.background(Palette.text)) {
+        val quiet = 4
+        val cell = size.minDimension / (matrix.width + quiet * 2)
+        for (y in 0 until matrix.height) {
+            for (x in 0 until matrix.width) {
+                if (matrix[x, y]) {
+                    drawRect(Palette.background, Offset((x + quiet) * cell, (y + quiet) * cell), Size(cell + 0.5f, cell + 0.5f))
+                }
+            }
+        }
+    }
+}
+
+private val QR_SIZE = 240.dp
+private const val RETRY_MS = 5_000L

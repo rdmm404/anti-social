@@ -66,6 +66,19 @@
   </section>
 
   <section class="panel">
+    <div class="row"><h2>Devices</h2><span class="spacer"></span><a href="/pair">Pair a device</a></div>
+    <ul>
+      {{range .Devices}}
+      <li class="row">
+        <span><strong>{{.Name}}</strong> <span class="muted">since {{date .CreatedAt}}{{if .Configured}}, from the server's config{{end}}</span></span>
+        <span class="spacer"></span>
+        {{if not .Configured}}<form method="post" action="/devices/{{.ID}}/remove"><button class="link" type="submit">Remove</button></form>{{end}}
+      </li>
+      {{end}}
+    </ul>
+  </section>
+
+  <section class="panel">
     <h2>Subscriptions</h2>
     {{if .Subscriptions}}
     <ul class="columns">{{range .Subscriptions}}<li>{{.Name}}</li>{{end}}</ul>

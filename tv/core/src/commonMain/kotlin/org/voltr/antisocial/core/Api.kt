@@ -56,6 +56,24 @@ private data class WatchedVideo(
 private data class WatchedReply(val videos: List<WatchedVideo>)
 
 @Serializable
+private data class NewPairing(val name: String)
+
+@Serializable
+private data class PairingClaim(val secret: String)
+
+@Serializable
+private data class PairingReply(val state: String, val token: String? = null)
+
+/** A pairing this device started: the code it shows, and the secret it claims its token with. */
+@Serializable
+data class PairingStarted(
+    val code: String,
+    val secret: String,
+    @SerialName("expires_at") val expiresAt: Double,
+    @SerialName("poll_every") val pollEvery: Int = 3,
+)
+
+@Serializable
 data class Checkin(
     @SerialName("video_id") val videoId: String,
     val title: String,
@@ -77,6 +95,24 @@ class Api(
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
     suspend fun status(): Status = get("api", "status")
+
+    /** Where a signed-in device approves a code. The TV shows it as a QR code. */
+    fun pairUrl(code: String? = null): String =
+        URLBuilder(base).apply { appendPathSegments("pair"); code?.let { parameters.append("code", it) } }.buildString()
+
+    /** Asks to join an account. Needs no token: it's how a device gets one (ADR 0004). */
+    suspend fun startPairing(name: String): PairingStarted =
+        send(HttpMethod.Post, "api", "pairings", body = json.encodeToString(NewPairing.serializer(), NewPairing(name)))
+            .let { json.decodeFromString(it) }
+
+    /**
+     * This device's own token once its code is approved, or null while it waits. Throws an
+     * [ApiError] with code 404 once the pairing has expired.
+     */
+    suspend fun claimPairing(secret: String): String? =
+        send(HttpMethod.Post, "api", "pairings", "claim", body = json.encodeToString(PairingClaim.serializer(), PairingClaim(secret)))
+            .let { json.decodeFromString<PairingReply>(it) }
+            .token
 
     suspend fun startSession(videos: Int): Status =
         send(HttpMethod.Post, "api", "session", body = json.encodeToString(NewSession.serializer(), NewSession(videos)))

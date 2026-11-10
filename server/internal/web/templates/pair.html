@@ -1,0 +1,14 @@
+{{define "pair.html"}}{{template "head"}}
+<header><strong>anti-social</strong><span class="spacer"></span><a href="/">Settings</a></header>
+<main>
+  <form class="panel" method="post" action="/pair">
+    <h1>Pair a device</h1>
+    <p class="muted">Check the code matches the one on the device's screen. Approving lets it into this account with a token of its own.</p>
+    {{with .Problem}}<p class="problem">{{.}}</p>{{end}}
+    <label>Code
+      <input class="code" name="code" value="{{.Code}}" placeholder="ABCD-EFGH" autocomplete="off" autocapitalize="characters" spellcheck="false" required {{if not .Code}}autofocus{{end}}>
+    </label>
+    <div class="row"><button class="primary" type="submit" {{if .Code}}autofocus{{end}}>Approve</button></div>
+  </form>
+</main>
+{{template "foot"}}{{end}}

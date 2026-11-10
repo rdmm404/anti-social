@@ -91,6 +91,7 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.coil.compose)
     implementation(libs.coil.okhttp)
+    implementation(libs.zxing.core)
     coreLibraryDesugaring(libs.desugar)
 
     testImplementation(libs.junit)
