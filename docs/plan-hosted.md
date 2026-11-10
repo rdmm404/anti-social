@@ -23,6 +23,8 @@ Done when the Go server runs in the homelab and the Fire TV works against it. Bl
 
 ## 2. Phone app, same as the TV
 
+Broken into slices in `docs/plan-phone.md`.
+
 The TV app on a phone first. Blocking and updates wait for milestone 4: YouTube is already disabled on my phone, and another app already redirects its links.
 
 - A `phone` module with touch screens on the same `core`, `youtube` and `playback`: search, channels, playlists, history and the player, as on the TV.
