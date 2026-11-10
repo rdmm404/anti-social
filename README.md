@@ -93,9 +93,30 @@ Tools come from `mise.toml`: Go, dbmate and Java. `.env` holds the device token
 
 ```sh
 mise run db       # Postgres 18 in Podman or Docker, on 127.0.0.1:55432
-mise run test     # Go tests, each against a fresh database
+mise run test     # Go tests, against memory and Postgres
 mise run server   # http://localhost:8080, settings page at /
 ```
+
+Each domain is a package holding its rules and the interface for its storage, with adapters
+below it. Adapters import the domain and the domain imports none of them, so the rules never
+see SQL or HTTP:
+
+| Package | Responsibility |
+| --- | --- |
+| `budget` | Budget days, sessions, check-ins, limits with cooling-off, history |
+| `library` | Subscriptions and playlists |
+| `accounts` | Devices and their tokens |
+| `<domain>/postgres` | Its storage in Postgres, with raw pgx queries returning the domain's types |
+| `<domain>/memory` | The same storage in memory, for tests |
+| `<domain>/api` | Its JSON API: wire types, handlers, and mapping to and from the domain's types |
+| `apperr` | The one error type for what a client did or asked: invalid, refused, not found, unauthorized |
+| `httpapi` | What every API shares: reading requests, writing answers and errors |
+| `web` | The settings page |
+| `cmd/anti-social` | The only place that wires everything together |
+
+The domain tests run against the memory adapters, and against Postgres too when
+`ANTI_SOCIAL_TEST_DATABASE_URL` is set, so the two can't drift apart. `mise run test` sets it.
+Without it, `go test ./...` needs no database and the Postgres halves skip.
 
 Migrations are dbmate files in `server/db/migrations/`. The server applies them on start. Make
 one with `cd server && dbmate new <name>`, apply it with `dbmate up`, then run

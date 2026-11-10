@@ -7,65 +7,58 @@ package accounts
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rdmm404/anti-social/server/internal/apperr"
 )
 
-var ErrUnknownToken = errors.New("unknown device token")
+// Device is a token that may act for the account. Only a hash of the token is kept, so a
+// leaked database holds no usable tokens.
+type Device struct {
+	Name      string
+	TokenHash []byte
+}
 
-func hash(token string) []byte {
+type Store interface {
+	// AccountFor returns the account a device belongs to, and false when no device has the hash.
+	AccountFor(ctx context.Context, tokenHash []byte) (int64, bool, error)
+	// SyncOwner makes sure the first account exists, holds exactly these devices, and returns
+	// it. It runs as one change, so two servers starting at once agree on the account.
+	SyncOwner(ctx context.Context, devices []Device) (int64, error)
+}
+
+var ErrUnknownToken = apperr.New(apperr.Unauthorized, "This device isn't signed in.")
+
+func Hash(token string) []byte {
 	sum := sha256.Sum256([]byte(token))
 	return sum[:]
 }
 
-type Accounts struct{ pool *pgxpool.Pool }
+type Service struct{ store Store }
 
-func New(pool *pgxpool.Pool) *Accounts { return &Accounts{pool} }
+func NewService(store Store) *Service { return &Service{store} }
 
-// Authenticate returns the account a device token belongs to.
-func (a *Accounts) Authenticate(ctx context.Context, token string) (int64, error) {
+// Authenticate returns the account a device token belongs to, or ErrUnknownToken.
+func (s *Service) Authenticate(ctx context.Context, token string) (int64, error) {
 	if token == "" {
 		return 0, ErrUnknownToken
 	}
-	var id int64
-	err := a.pool.QueryRow(ctx, "SELECT account_id FROM devices WHERE token_hash = $1", hash(token)).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	id, ok, err := s.store.AccountFor(ctx, Hash(token))
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
 		return 0, ErrUnknownToken
 	}
-	return id, err
+	return id, nil
 }
 
-// EnsureOwner makes sure the server's one account exists and each configured token is a
-// device in it, removes any other device, and returns the account. Running it again
-// changes nothing.
-func (a *Accounts) EnsureOwner(ctx context.Context, tokens map[string]string) (int64, error) {
-	var id int64
-	err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "LOCK TABLE accounts IN EXCLUSIVE MODE"); err != nil {
-			return err
-		}
-		err := tx.QueryRow(ctx, "SELECT id FROM accounts ORDER BY id LIMIT 1").Scan(&id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			err = tx.QueryRow(ctx, "INSERT INTO accounts DEFAULT VALUES RETURNING id").Scan(&id)
-		}
-		if err != nil {
-			return err
-		}
-		hashes := make([][]byte, 0, len(tokens))
-		for name, token := range tokens {
-			hashes = append(hashes, hash(token))
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO devices (account_id, token_hash, name) VALUES ($1, $2, $3)
-				ON CONFLICT (token_hash) DO NOTHING`, id, hash(token), name); err != nil {
-				return err
-			}
-		}
-		// Config is the device list for now, so changing the token revokes the old one.
-		_, err = tx.Exec(ctx,
-			"DELETE FROM devices WHERE account_id = $1 AND NOT (token_hash = ANY($2))", id, hashes)
-		return err
-	})
-	return id, err
+// EnsureOwner makes sure the server's one account exists and holds exactly the configured
+// tokens, keyed by device name. Config is the device list for now, so changing the token
+// signs out the old one. Running it again changes nothing.
+func (s *Service) EnsureOwner(ctx context.Context, tokens map[string]string) (int64, error) {
+	devices := make([]Device, 0, len(tokens))
+	for name, token := range tokens {
+		devices = append(devices, Device{Name: name, TokenHash: Hash(token)})
+	}
+	return s.store.SyncOwner(ctx, devices)
 }

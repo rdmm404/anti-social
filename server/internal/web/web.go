@@ -1,10 +1,12 @@
-package api
+// Package web is the settings page: where the account stands, its limits, the last week and
+// its subscriptions. Signing in sets a cookie holding the device token.
+package web
 
 import (
 	"embed"
-	"errors"
 	"fmt"
 	"html/template"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -12,7 +14,9 @@ import (
 	"time"
 
 	"github.com/rdmm404/anti-social/server/internal/accounts"
-	"github.com/rdmm404/anti-social/server/internal/ledger"
+	"github.com/rdmm404/anti-social/server/internal/apperr"
+	"github.com/rdmm404/anti-social/server/internal/budget"
+	"github.com/rdmm404/anti-social/server/internal/httpapi"
 	"github.com/rdmm404/anti-social/server/internal/library"
 )
 
@@ -24,11 +28,12 @@ var staticFiles embed.FS
 
 var pages = template.Must(template.New("").Funcs(template.FuncMap{
 	"minutes": minutesText,
-	"clock":   func(unix float64) string { return time.UnixMilli(int64(unix * 1000)).Format("3:04 pm") },
+	"clock":   func(t time.Time) string { return t.Local().Format("3:04 pm") },
 	"when":    func(t time.Time) string { return t.Local().Format("Mon Jan 2, 3:04 pm") },
+	"hours":   func(d time.Duration) int { return int(d.Hours()) },
 	"label":   settingLabel,
-	"low":     func(key string) int { l, _ := ledger.Bounds(key); return l },
-	"high":    func(key string) int { _, h := ledger.Bounds(key); return h },
+	"low":     func(key string) int { l, _ := budget.Bounds(key); return l },
+	"high":    func(key string) int { _, h := budget.Bounds(key); return h },
 	"percent": percent,
 	"weekday": weekday,
 }).ParseFS(templateFiles, "templates/*.html"))
@@ -47,9 +52,9 @@ func minutesText(seconds int64) string {
 
 func settingLabel(key string) string {
 	switch key {
-	case ledger.DailyMinutes:
+	case budget.DailyMinutes:
 		return "Daily budget"
-	case ledger.SessionGapMinutes:
+	case budget.SessionGapMinutes:
 		return "Gap between sessions"
 	}
 	return key
@@ -71,26 +76,36 @@ func weekday(day string) string {
 }
 
 type pageData struct {
-	Status        ledger.Status
-	Settings      ledger.SettingsView
+	Status        budget.Status
+	Settings      budget.SettingsView
 	SettingNames  []string
-	Days          []ledger.DayTotal
+	Days          []budget.DayTotal
 	Subscriptions []library.Subscription
 	Notice        string
 	Problem       string
 }
 
-func (s *Server) pageRoutes(mux *http.ServeMux) {
+type Page struct {
+	accounts *accounts.Service
+	budget   *budget.Service
+	library  *library.Service
+}
+
+func New(a *accounts.Service, b *budget.Service, l *library.Service) *Page {
+	return &Page{accounts: a, budget: b, library: l}
+}
+
+func (p *Page) Register(mux *http.ServeMux) {
 	// The page's forms are same-origin only, whatever the cookie would allow.
 	guard := http.NewCrossOriginProtection()
 	form := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, guard.Handler(h)) }
 
 	mux.Handle("GET /static/", http.FileServerFS(staticFiles))
-	mux.HandleFunc("GET /{$}", s.page)
-	form("POST /sign-in", s.signIn)
-	form("POST /sign-out", s.signOut)
-	form("POST /settings", s.pageAuthenticated(s.saveSettings))
-	form("POST /settings/pending/{id}/cancel", s.pageAuthenticated(s.cancelFromPage))
+	mux.HandleFunc("GET /{$}", p.page)
+	form("POST /sign-in", p.signIn)
+	form("POST /sign-out", p.signOut)
+	form("POST /settings", p.signedIn(p.saveSettings))
+	form("POST /settings/pending/{id}/cancel", p.signedIn(p.cancel))
 }
 
 func secure(r *http.Request) bool {
@@ -99,7 +114,7 @@ func secure(r *http.Request) bool {
 
 func setTokenCookie(w http.ResponseWriter, r *http.Request, value string, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
+		Name:     httpapi.CookieName,
 		Value:    value,
 		Path:     "/",
 		MaxAge:   maxAge,
@@ -109,14 +124,19 @@ func setTokenCookie(w http.ResponseWriter, r *http.Request, value string, maxAge
 	})
 }
 
-// pageAuthenticated is authenticated for forms: a signed-out browser goes back to sign in.
-func (s *Server) pageAuthenticated(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
+// signedIn runs next with the account, or sends a signed-out browser back to sign in.
+func (p *Page) signedIn(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, err := s.accounts.Authenticate(r.Context(), token(r)); errors.Is(err, accounts.ErrUnknownToken) {
+		id, err := p.accounts.Authenticate(r.Context(), httpapi.Token(r))
+		if apperr.Is(err, apperr.Unauthorized) {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
-		s.authenticated(next)(w, r)
+		if err != nil {
+			httpapi.Fail(w, r, err)
+			return
+		}
+		next(w, r.WithContext(httpapi.WithAccount(r.Context(), id)))
 	}
 }
 
@@ -124,45 +144,45 @@ func back(w http.ResponseWriter, r *http.Request, kind, message string) {
 	http.Redirect(w, r, "/?"+url.Values{kind: {message}}.Encode(), http.StatusSeeOther)
 }
 
-func (s *Server) page(w http.ResponseWriter, r *http.Request) {
+func (p *Page) page(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	account, err := s.accounts.Authenticate(r.Context(), token(r))
-	if errors.Is(err, accounts.ErrUnknownToken) {
-		s.render(w, "sign-in.html", map[string]string{"Problem": r.URL.Query().Get("problem")})
+	account, err := p.accounts.Authenticate(r.Context(), httpapi.Token(r))
+	if apperr.Is(err, apperr.Unauthorized) {
+		render(w, "sign-in.html", map[string]string{"Problem": r.URL.Query().Get("problem")})
 		return
 	}
 	if err != nil {
-		s.fail(w, r, err)
+		httpapi.Fail(w, r, err)
 		return
 	}
-	data := pageData{SettingNames: ledger.SettingNames, Notice: r.URL.Query().Get("notice"), Problem: r.URL.Query().Get("problem")}
+	data := pageData{SettingNames: budget.SettingNames, Notice: r.URL.Query().Get("notice"), Problem: r.URL.Query().Get("problem")}
 	ctx := r.Context()
-	if data.Status, err = s.ledger.Status(ctx, account); err == nil {
-		if data.Settings, err = s.ledger.Settings(ctx, account); err == nil {
-			var h ledger.History
-			if h, err = s.ledger.History(ctx, account, 7); err == nil {
+	if data.Status, err = p.budget.Status(ctx, account); err == nil {
+		if data.Settings, err = p.budget.Settings(ctx, account); err == nil {
+			var h budget.History
+			if h, err = p.budget.History(ctx, account, 7); err == nil {
 				data.Days = h.Days
-				data.Subscriptions, err = s.library.Subscriptions(ctx, account)
+				data.Subscriptions, err = p.library.Subscriptions(ctx, account)
 			}
 		}
 	}
 	if err != nil {
-		s.fail(w, r, err)
+		httpapi.Fail(w, r, err)
 		return
 	}
-	s.render(w, "settings.html", data)
+	render(w, "settings.html", data)
 }
 
-func (s *Server) render(w http.ResponseWriter, name string, data any) {
+func render(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := pages.ExecuteTemplate(w, name, data); err != nil {
-		s.log.Error("render", "page", name, "err", err)
+		slog.Error("render", "page", name, "err", err)
 	}
 }
 
-func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
+func (p *Page) signIn(w http.ResponseWriter, r *http.Request) {
 	given := r.PostFormValue("token")
-	if _, err := s.accounts.Authenticate(r.Context(), given); err != nil {
+	if _, err := p.accounts.Authenticate(r.Context(), given); err != nil {
 		back(w, r, "problem", "That token doesn't match this server's.")
 		return
 	}
@@ -170,14 +190,14 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
+func (p *Page) signOut(w http.ResponseWriter, r *http.Request) {
 	setTokenCookie(w, r, "", -1)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
+func (p *Page) saveSettings(w http.ResponseWriter, r *http.Request) {
 	changes := map[string]int{}
-	for _, key := range ledger.SettingNames {
+	for _, key := range budget.SettingNames {
 		raw := r.PostFormValue(key)
 		if raw == "" {
 			continue
@@ -189,14 +209,13 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		changes[key] = v
 	}
-	result, err := s.ledger.ChangeSettings(r.Context(), accountOf(r), changes)
-	var refusal *ledger.Refusal
-	if errors.As(err, &refusal) {
-		back(w, r, "problem", refusal.Message)
+	result, err := p.budget.ChangeSettings(r.Context(), httpapi.Account(r), changes)
+	if e, ok := apperr.As(err); ok {
+		back(w, r, "problem", e.Message)
 		return
 	}
 	if err != nil {
-		s.fail(w, r, err)
+		httpapi.Fail(w, r, err)
 		return
 	}
 	switch {
@@ -211,14 +230,14 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) cancelFromPage(w http.ResponseWriter, r *http.Request) {
+func (p *Page) cancel(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		back(w, r, "problem", "That change no longer exists.")
 		return
 	}
-	if err := s.ledger.CancelChange(r.Context(), accountOf(r), id); err != nil {
-		s.fail(w, r, err)
+	if err := p.budget.CancelChange(r.Context(), httpapi.Account(r), id); err != nil {
+		httpapi.Fail(w, r, err)
 		return
 	}
 	back(w, r, "notice", "Change cancelled.")

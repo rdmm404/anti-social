@@ -1,8 +1,8 @@
 // Package testdb gives each test its own freshly migrated Postgres database.
 //
-// Tests need ANTI_SOCIAL_TEST_DATABASE_URL pointing at a Postgres whose user may create
-// databases, such as the one `mise run db` starts. Without it they fail rather than skip,
-// so a missing database can't pass for a green run.
+// It needs ANTI_SOCIAL_TEST_DATABASE_URL pointing at a Postgres whose user may create
+// databases, such as the one `mise run db` starts. Tests that run against Postgres as well
+// as memory skip their Postgres half without it; `mise run test` always sets it.
 package testdb
 
 import (
@@ -21,12 +21,13 @@ import (
 
 const envVar = "ANTI_SOCIAL_TEST_DATABASE_URL"
 
-// New creates an empty database, migrates it, and drops it when the test ends.
-func New(t testing.TB) *pgxpool.Pool {
+// Optional creates an empty database, migrates it, and drops it when the test ends. It skips
+// the test when there's no database to use.
+func Optional(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	admin := os.Getenv(envVar)
 	if admin == "" {
-		t.Fatalf("%s isn't set. Start a database with `mise run db` and export the URL it prints.", envVar)
+		t.Skipf("%s isn't set, so this runs against memory only. `mise run test` sets it.", envVar)
 	}
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, admin)

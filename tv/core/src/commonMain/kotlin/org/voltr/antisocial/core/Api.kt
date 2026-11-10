@@ -24,8 +24,12 @@ class ApiError(val code: Int, message: String) : Exception(message) {
     val signedOut get() = code == 401
 }
 
+/** A failed request's body: `{"error": {"code": "refused", "message": "..."}}`. */
 @Serializable
-private data class ErrorBody(val message: String? = null)
+private data class ErrorReply(val error: ErrorBody? = null)
+
+@Serializable
+private data class ErrorBody(val code: String? = null, val message: String? = null)
 
 @Serializable
 private data class NewSession(val videos: Int)
@@ -138,7 +142,7 @@ class Api(
     }
 
     private fun errorMessage(code: Int, body: String): String =
-        runCatching { json.decodeFromString<ErrorBody>(body).message }.getOrNull()
+        runCatching { json.decodeFromString<ErrorReply>(body).error?.message }.getOrNull()
             ?: "Request failed ($code)"
 }
 

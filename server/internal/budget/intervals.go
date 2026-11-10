@@ -1,4 +1,4 @@
-package ledger
+package budget
 
 import "sort"
 

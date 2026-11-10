@@ -24,12 +24,12 @@
 
   <form class="panel" method="post" action="/settings">
     <h2>Limits</h2>
-    <p class="muted">Tighter limits apply at once. Looser ones wait {{.Settings.CoolingOffHours}} hours, so they're decided calmly.</p>
+    <p class="muted">Tighter limits apply at once. Looser ones wait {{hours .Settings.CoolingOff}} hours, so they're decided calmly.</p>
     <div class="fields">
       {{range $key := .SettingNames}}
       <label>{{label $key}}
         <span class="row">
-          <input type="number" name="{{$key}}" value="{{index $.Settings.Settings $key}}" min="{{low $key}}" max="{{high $key}}" required>
+          <input type="number" name="{{$key}}" value="{{index $.Settings.Values $key}}" min="{{low $key}}" max="{{high $key}}" required>
           <span class="muted">minutes</span>
         </span>
       </label>

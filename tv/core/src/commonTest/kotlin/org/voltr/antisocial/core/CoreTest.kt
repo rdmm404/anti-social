@@ -227,7 +227,7 @@ class WatchTest {
     @Test
     fun `a revoked token signs the device out`() = runTest {
         val watch = Watch(api(), details) { clock }
-        replies += { respond("""{"error":"unauthorized","message":"no"}""", HttpStatusCode.Unauthorized) }
+        replies += { respond("""{"error":{"code":"unauthorized","message":"no"}}""", HttpStatusCode.Unauthorized) }
         assertIs<Verdict.SignedOut>(watch.checkIn())
         assertFalse(watch.mayPlay())
     }
@@ -248,7 +248,7 @@ class ApiTest {
     @Test
     fun `refusals carry the server's message`() = runTest {
         val api = Api("http://server", "tok", HttpClient(MockEngine {
-            respond("""{"error":"refused","message":"The next session isn't open yet."}""", HttpStatusCode.Conflict)
+            respond("""{"error":{"code":"refused","message":"The next session isn't open yet."}}""", HttpStatusCode.Conflict)
         }))
         val error = runCatching { api.startSession(1) }.exceptionOrNull()
         assertIs<ApiError>(error)

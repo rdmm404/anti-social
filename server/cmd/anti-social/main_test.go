@@ -1,11 +1,13 @@
-package api_test
+package main
+
+// The routes end to end over HTTP: the wire format, status codes, auth and the settings page.
+// They run on the in-memory adapters; the rules themselves are tested in each domain.
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -16,10 +18,11 @@ import (
 	"time"
 
 	"github.com/rdmm404/anti-social/server/internal/accounts"
-	"github.com/rdmm404/anti-social/server/internal/api"
-	"github.com/rdmm404/anti-social/server/internal/ledger"
+	accountsmem "github.com/rdmm404/anti-social/server/internal/accounts/memory"
+	"github.com/rdmm404/anti-social/server/internal/budget"
+	budgetmem "github.com/rdmm404/anti-social/server/internal/budget/memory"
 	"github.com/rdmm404/anti-social/server/internal/library"
-	"github.com/rdmm404/anti-social/server/internal/testdb"
+	librarymem "github.com/rdmm404/anti-social/server/internal/library/memory"
 )
 
 const token = "0123456789abcdef0123456789abcdef"
@@ -33,21 +36,25 @@ type client struct {
 func setup(t *testing.T) *client {
 	t.Helper()
 	t.Parallel()
-	pool := testdb.New(t)
-	accts := accounts.New(pool)
-	if _, err := accts.EnsureOwner(context.Background(), map[string]string{"test": token}); err != nil {
+	accts := accounts.NewService(accountsmem.New())
+	account, err := accts.EnsureOwner(context.Background(), map[string]string{"test": token})
+	if err != nil {
 		t.Fatal(err)
 	}
-	l := ledger.New(pool, ledger.Config{
-		Location:      time.UTC,
-		DayStartHour:  4,
-		CoolingOff:    72 * time.Hour,
-		CheckinExpiry: time.Minute,
-		CheckinEvery:  15 * time.Second,
-		Seeds:         map[string]int{ledger.DailyMinutes: 10, ledger.SessionGapMinutes: 20},
-	}, nil)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := httptest.NewServer(api.New(accts, l, library.New(pool, nil), log).Handler())
+	budgets := budgetmem.New()
+	budgets.AddAccount(account)
+	server := httptest.NewServer(handler(services{
+		accounts: accts,
+		budget: budget.NewService(budgets, budget.Config{
+			Location:      time.UTC,
+			DayStartHour:  4,
+			CoolingOff:    72 * time.Hour,
+			CheckinExpiry: time.Minute,
+			CheckinEvery:  15 * time.Second,
+			Seeds:         map[string]int{budget.DailyMinutes: 10, budget.SessionGapMinutes: 20},
+		}, nil),
+		library: library.NewService(librarymem.New(), nil),
+	}))
 	t.Cleanup(server.Close)
 	return &client{t, server, token}
 }
@@ -88,7 +95,7 @@ func TestEveryEndpointNeedsAToken(t *testing.T) {
 	c.token = ""
 	for _, path := range []string{"/api/status", "/api/subscriptions", "/api/playlists", "/api/settings", "/api/history"} {
 		body := c.expect("GET", path, nil, 401)
-		if body["error"] != "unauthorized" {
+		if errorCode(body) != "unauthorized" {
 			t.Fatalf("%s: %v", path, body)
 		}
 	}
@@ -105,8 +112,12 @@ func TestCheckinsOverHTTP(t *testing.T) {
 	if refused["allowed"] != false || refused["reason"] != "no_session" {
 		t.Fatalf("before a session: %v", refused)
 	}
-	c.expect("POST", "/api/session", map[string]int{"videos": 9}, 409)
-	status := c.expect("POST", "/api/session", map[string]int{"videos": 1}, 200)
+	c.expect("POST", "/api/session", map[string]int{"videos": 9}, 400)
+	c.expect("POST", "/api/session", map[string]int{"videos": 1}, 200)
+	if out := c.expect("POST", "/api/session", map[string]int{"videos": 1}, 409); errorCode(out) != "refused" {
+		t.Fatalf("a second session: %v", out)
+	}
+	status := c.expect("GET", "/api/status", nil, 200)
 	if status["state"] != "open" {
 		t.Fatalf("after starting: %v", status)
 	}
@@ -168,14 +179,14 @@ func TestSubscriptions(t *testing.T) {
 
 func TestPlaylists(t *testing.T) {
 	c := setup(t)
-	c.expect("POST", "/api/playlists", map[string]string{"name": " "}, 409)
+	c.expect("POST", "/api/playlists", map[string]string{"name": " "}, 400)
 	id := int(c.expect("POST", "/api/playlists", map[string]string{"name": " Later "}, 200)["id"].(float64))
 	path := "/api/playlists/" + itoa(id)
 	c.expect("POST", path+"/items", map[string]any{"id": "bbbbbbbbbbb", "title": "B"}, 204)
 	c.expect("POST", path+"/items", map[string]any{"id": "aaaaaaaaaaa", "title": "A", "channel": "c", "duration": 9}, 204)
 	c.expect("POST", path+"/items", map[string]any{"id": "bbbbbbbbbbb", "title": "B again"}, 204)
 	c.expect("POST", path+"/items", map[string]any{"id": "../bad", "title": "x"}, 400)
-	c.expect("POST", "/api/playlists/999/items", map[string]any{"id": "ccccccccccc", "title": "C"}, 409)
+	c.expect("POST", "/api/playlists/999/items", map[string]any{"id": "ccccccccccc", "title": "C"}, 404)
 
 	p := c.expect("GET", path, nil, 200)
 	items := p["items"].([]any)
@@ -204,7 +215,7 @@ func TestSettingsOverHTTP(t *testing.T) {
 		t.Fatalf("settings: %v", view)
 	}
 	c.expect("DELETE", "/api/settings/pending/"+itoa(int(pending[0].(map[string]any)["id"].(float64))), nil, 204)
-	c.expect("POST", "/api/settings", map[string]any{"changes": map[string]int{"cooling_off_hours": 0}}, 409)
+	c.expect("POST", "/api/settings", map[string]any{"changes": map[string]int{"cooling_off_hours": 0}}, 400)
 	c.expect("GET", "/api/history/videos?start='; drop", nil, 400)
 }
 
@@ -275,3 +286,16 @@ func TestHealthNeedsNoToken(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// errorCode is the code in an error body: {"error": {"code": ..., "message": ...}}.
+func errorCode(body map[string]any) any {
+	e, _ := body["error"].(map[string]any)
+	return e["code"]
+}
+
+func TestUnknownAPIRoutesAnswerInJSON(t *testing.T) {
+	c := setup(t)
+	if body := c.expect("GET", "/api/nope", nil, 404); errorCode(body) != "not_found" {
+		t.Fatalf("unknown route: %v", body)
+	}
+}
