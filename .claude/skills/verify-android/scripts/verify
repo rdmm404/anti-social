@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Drives the anti-social Android apps against a disposable Go server. See ../SKILL.md.
+# Every run lives in .verify/<run-id>/ at the repo root; .verify/current points at the latest.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
+ADB=${ADB:-$HOME/Android/Sdk/platform-tools/adb}
+EMULATOR=$HOME/Android/Sdk/emulator/emulator
+PG=anti-social-pg
+PORT=${VERIFY_PORT:-38080}
+EMU_PORT=5580
+EMU_SERIAL=emulator-$EMU_PORT
+RUNTIME=$(command -v podman || command -v docker)
+
+die() { echo "verify: $*" >&2; exit 1; }
+run_dir() { [ -e "$REPO/.verify/current" ] || die "no run; start one with: verify up"; readlink -f "$REPO/.verify/current"; }
+state() { local f; f="$(run_dir)/$1"; [ -f "$f" ] && cat "$f" || true; }
+serial() { local s; s=$(state serial); [ -n "$s" ] || die "no device chosen; run: verify device <emulator|tv|phone>"; echo "$s"; }
+adbd() { "$ADB" -s "$(serial)" "$@"; }
+db_url() { echo "postgres://anti_social:dev@127.0.0.1:55432/$(state db)?sslmode=disable"; }
+ours() { local pid=$1 want=$2; [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] && tr '\0' ' ' <"/proc/$pid/cmdline" | command grep -q -- "$want"; }
+
+up() {
+  local id; id=$(date +%Y%m%d-%H%M%S)
+  local dir="$REPO/.verify/$id"
+  mkdir -p "$dir/shots" "$dir/evidence"
+  ln -sfn "$id" "$REPO/.verify/current"
+  local db="anti_social_verify_${id//-/_}"
+  echo "$db" >"$dir/db"
+
+  (cd "$REPO" && mise run db >/dev/null)
+  "$RUNTIME" exec "$PG" psql -q -U anti_social -d anti_social -c "CREATE DATABASE $db" >/dev/null
+
+  (umask 077; openssl rand -hex 32 >"$dir/token")
+  (cd "$REPO/server" && mise exec -- go build -o "$dir/anti-social" ./cmd/anti-social)
+  ANTI_SOCIAL_DATABASE_URL="$(db_url)" ANTI_SOCIAL_TOKEN="$(cat "$dir/token")" \
+    ANTI_SOCIAL_ADDR=":$PORT" TZ=America/Toronto \
+    nohup "$dir/anti-social" >"$dir/server.log" 2>&1 &
+  echo $! >"$dir/server.pid"
+  for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 0.2; done
+  curl -fs "http://127.0.0.1:$PORT/healthz" >/dev/null || { tail "$dir/server.log"; die "server didn't come up"; }
+  echo "run $id: server on :$PORT, database $db, evidence in $dir"
+}
+
+device() {
+  local dir; dir=$(run_dir)
+  case "${1:-}" in
+    emulator)
+      if ! "$ADB" devices | command grep -q "^$EMU_SERIAL"; then
+        # -read-only: a throwaway instance that leaves the AVD as it was and can run beside another.
+        nohup "$EMULATOR" -avd firetv-sim -port "$EMU_PORT" -read-only -no-window -no-audio -no-boot-anim -no-snapshot \
+          >"$dir/emulator.log" 2>&1 &
+        echo $! >"$dir/emulator.pid"
+      fi
+      "$ADB" -s "$EMU_SERIAL" wait-for-device
+      until [ "$("$ADB" -s "$EMU_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 1; done
+      echo "$EMU_SERIAL" >"$dir/serial"
+      echo "http://10.0.2.2:$PORT" >"$dir/server_url"
+      # Wi-Fi comes up a while after boot_completed. Ready means the app could reach the server.
+      for _ in $(seq 1 60); do
+        "$ADB" -s "$EMU_SERIAL" shell "printf 'GET /healthz HTTP/1.0\r\n\r\n' | toybox nc -w 2 10.0.2.2 $PORT" 2>/dev/null | command grep -q '200 OK' && break
+        sleep 1
+      done
+      ;;
+    tv | phone)
+      local s=${2:-}
+      [ -n "$s" ] || die "give the device's adb address: verify device $1 <ip:port>"
+      "$ADB" connect "$s" >/dev/null
+      "$ADB" -s "$s" get-state >/dev/null || die "$s isn't reachable over adb"
+      echo "$s" >"$dir/serial"
+      local ip; ip=$(ip -4 route get "${s%:*}" | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+      echo "http://$ip:$PORT" >"$dir/server_url"
+      ;;
+    *) die "usage: verify device <emulator | tv <ip:port> | phone <ip:port>>" ;;
+  esac
+  echo "device $(state serial), app server $(state server_url)"
+}
+
+install() {
+  local app=${1:-} mode=${2:-paired}
+  [[ $app = tv || $app = phone ]] || die "usage: verify install <tv|phone> [--signed-in]"
+  [ -d "$REPO/tv/$app" ] || die "the $app module doesn't exist yet (tv/$app)"
+  local args=(-PantiSocialServer="$(state server_url)")
+  [ "$mode" = --signed-in ] && args+=(-PantiSocialToken="$(state token)")
+  (cd "$REPO/tv" && mise exec -- ./gradlew -q ":$app:assembleDebug" "${args[@]}")
+  local pkg=org.voltr.antisocial.$app
+  adbd uninstall "$pkg" >/dev/null 2>&1 || true
+  adbd install "$REPO/tv/$app/build/outputs/apk/debug/$app-debug.apk" >/dev/null
+  echo "$pkg" >"$(run_dir)/package"
+  adbd shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+  echo "installed and launched $pkg ($mode)"
+}
+
+doctor() {
+  local dir ok=1; dir=$(run_dir)
+  echo "run:      $dir"
+  if ours "$(state server.pid)" "$dir/anti-social"; then echo "server:   pid $(state server.pid), ours"; else echo "server:   NOT RUNNING (or not ours)"; ok=0; fi
+  if curl -fs "http://127.0.0.1:$PORT/healthz" >/dev/null; then echo "healthz:  ok on :$PORT"; else echo "healthz:  FAILING on :$PORT"; ok=0; fi
+  local owner; owner=$(ss -ltnpH "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
+  [ "$owner" = "$(state server.pid)" ] && echo "port:     :$PORT owned by our server" || { echo "port:     :$PORT owned by pid ${owner:-nobody}"; ok=0; }
+  if psql_q "select 1" >/dev/null 2>&1; then echo "database: $(state db)"; else echo "database: UNREACHABLE"; ok=0; fi
+  local s; s=$(state serial)
+  if [ -n "$s" ] && [ "$("$ADB" -s "$s" get-state 2>/dev/null)" = device ]; then echo "device:   $s online"; else echo "device:   ${s:-none} OFFLINE"; ok=0; fi
+  local pkg; pkg=$(state package)
+  if [ -n "$pkg" ] && [ -n "$s" ]; then
+    adbd shell pm path "$pkg" >/dev/null 2>&1 && echo "app:      $pkg installed, talking to $(state server_url)" || { echo "app:      $pkg MISSING"; ok=0; }
+  fi
+  [ $ok = 1 ] && echo "doctor: ready" || { echo "doctor: NOT READY"; return 1; }
+}
+
+psql_q() { "$RUNTIME" exec -i "$PG" psql -q -U anti_social -d "$(state db)" -c "$1"; }
+
+# One line per on-screen node with text or a description: text|desc|centre-x centre-y.
+ui() {
+  adbd shell uiautomator dump /sdcard/verify-ui.xml >/dev/null
+  adbd exec-out cat /sdcard/verify-ui.xml |
+    command grep -o '<node [^>]*>' |
+    sed -n 's/.*text="\([^"]*\)".*content-desc="\([^"]*\)".*bounds="\[\([0-9]*\),\([0-9]*\)\]\[\([0-9]*\),\([0-9]*\)\]".*/\1|\2|\3 \4 \5 \6/p' |
+    awk -F'|' '($1!="" || $2!="") { split($3,b," "); printf "%s|%s|%d %d\n", $1, $2, (b[1]+b[3])/2, (b[2]+b[4])/2 }'
+}
+
+# The node with input focus (the TV's cursor), and the texts inside it.
+focused() {
+  adbd shell uiautomator dump /sdcard/verify-ui.xml >/dev/null
+  adbd exec-out cat /sdcard/verify-ui.xml | python3 -c '
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+for n in root.iter("node"):
+    if n.get("focused") == "true":
+        texts = [m.get("text") or m.get("content-desc") for m in n.iter("node") if (m.get("text") or m.get("content-desc"))]
+        print(" | ".join(texts) or "(focused node has no text)", n.get("bounds"))
+        break
+else:
+    print("(nothing focused)")'
+}
+
+wait_text() {
+  local pattern=$1 timeout=${2:-20} end=$((SECONDS + ${2:-20}))
+  while [ $SECONDS -lt $end ]; do
+    local hit; hit=$(ui | command grep -E -m1 "^[^|]*($pattern)" || true)
+    [ -n "$hit" ] && { echo "$hit"; return 0; }
+    sleep 1
+  done
+  die "no text matching /$pattern/ within ${timeout}s"
+}
+
+tap_text() {
+  local hit; hit=$(wait_text "$1" "${2:-20}")
+  local xy=${hit##*|}
+  adbd shell input tap $xy
+  echo "tapped: $hit"
+}
+
+shot() {
+  local name=${1:?usage: verify shot <name>} out
+  out="$(run_dir)/shots/$name.png"
+  adbd exec-out screencap -p >"$out"
+  ui >"$(run_dir)/shots/$name.ui.txt"
+  echo "$out"
+}
+
+evidence() {
+  local name=${1:?usage: verify evidence <name> <sql>}; shift
+  local out; out="$(run_dir)/evidence/$name.txt"
+  psql_q "$*" | tee "$out"
+}
+
+down() {
+  local dir; dir=$(run_dir)
+  local pid; pid=$(state server.pid)
+  if ours "$pid" "$dir/anti-social"; then kill "$pid"; echo "stopped server $pid"; fi
+  pid=$(state emulator.pid)
+  if ours "$pid" "firetv-sim"; then "$ADB" -s "$EMU_SERIAL" emu kill >/dev/null 2>&1 || kill "$pid"; echo "stopped emulator $pid"; fi
+  local db; db=$(state db)
+  [ -n "$db" ] && "$RUNTIME" exec "$PG" psql -q -U anti_social -d anti_social -c "DROP DATABASE IF EXISTS $db WITH (FORCE)" >/dev/null && echo "dropped $db"
+  command rm -f "$dir/anti-social" "$dir/token"
+  echo "evidence kept in $dir"
+}
+
+cmd=${1:-}; shift || true
+case "$cmd" in
+  up) up ;;
+  device) device "$@" ;;
+  install) install "$@" ;;
+  doctor) doctor ;;
+  ui) ui ;;
+  focused) focused ;;
+  wait-text) wait_text "$@" ;;
+  tap-text) tap_text "$@" ;;
+  keys) adbd shell input keyevent "$@" ;;
+  type) adbd shell input text "${1// /%s}" ;;
+  shot) shot "$@" ;;
+  sql) psql_q "$*" ;;
+  evidence) evidence "$@" ;;
+  log) tail -n "${1:-20}" "$(run_dir)/server.log" ;;
+  token) cat "$(run_dir)/token" ;;
+  url) echo "http://127.0.0.1:$PORT" ;;
+  adb) adbd "$@" ;;
+  down) down ;;
+  *) sed -n '2,3p' "$0"; echo "commands: up device install doctor ui focused wait-text tap-text keys type shot sql evidence log token url adb down"; exit 1 ;;
+esac

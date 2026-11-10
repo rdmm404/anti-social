@@ -86,5 +86,5 @@ Done when a playlist imported from a YouTube link shows up on both the phone and
 
 - Tests: `cd tv && mise exec -- ./gradlew :core:jvmTest :youtube:test testDebugUnitTest`. Link parsing and any logic moved into `core` get tests there.
 - Develop against a local server (`mise run db`, `mise run server`, `-PantiSocialServer=http://<this machine's LAN IP>:8080`), so testing doesn't spend the owner's real budget. The phone reaches it only while this machine's firewall allows port 8080 from 192.168.2.0/24, and the owner may have removed that rule since. Check the phone against `https://api.yt.nautilus.voltr.org` once, at the end of each slice. The production token is in `~/apps/anti-social-server/server/.env` on nautilus. Never print it.
-- Drive the phone over adb yourself: wireless debugging, `adb pair`, then `adb connect`. Batch key events into one `input keyevent` call. Take screenshots with `adb exec-out screencap -p`.
+- Prove each slice's criterion with the `verify-android` skill (`.claude/skills/verify-android/`): a disposable server and database, the emulator or a real device, and screenshots plus server-side rows. When a slice adds a feature or a phone entry point, update its file in `features/`, or add one.
 - Commit after each slice. Ask the owner before pushing, tagging a release, or changing the server.
