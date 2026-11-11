@@ -47,6 +47,16 @@ release build was checked the same way (pairing, search, playback, comments). Ex
 the way it failed: phone turned sideways, exit, held portrait while sideways, back to following the phone
 once upright.
 
+## Release 0.1.0 on the owner's phone (2026-11-10)
+
+- phone-v0.1.0 (the official, release-signed APK, pointing at api.yt.nautilus.voltr.org) is installed on
+  the owner's phone and was used all day without problems.
+- OxygenOS refused to sideload the APK from the browser, so it went on with `adb install` over wireless
+  debugging. Later releases may need the same, or "Install unknown apps" allowed for the browser.
+- A release build can't update a debug build (different keys): uninstall the debug build first.
+- To pair a browser with the production server, the device token is `ANTI_SOCIAL_TOKEN` in
+  `~/apps/anti-social-server/server/.env` on nautilus (the running server's compose folder).
+
 ## Open question
 
 - The server's approval page says "Check the code matches the one on the device's screen", but the phone
