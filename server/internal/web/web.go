@@ -129,7 +129,9 @@ func setTokenCookie(w http.ResponseWriter, r *http.Request, value string, maxAge
 		MaxAge:   maxAge,
 		HttpOnly: true,
 		Secure:   secure(r),
-		SameSite: http.SameSiteStrictMode,
+		// Lax, not Strict: the phone app opens this page from outside the browser, and Chrome
+		// keeps a Strict cookie back on a page another app opens, so it asked to sign in each time.
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
