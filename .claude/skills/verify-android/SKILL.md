@@ -17,6 +17,7 @@ All commands run from the repo root as `V=.claude/skills/verify-android/scripts/
    - `$V device phone-emulator` does the same with the `phone-sim` AVD (a Pixel 6 on Android 16, Google APIs x86_64) on `emulator-5582`, for the phone app. The phone app needs Android 12 or later, so it can't install on `firetv-sim`. Booting takes about 40 s. If the AVD is missing, create it with `~/Android/Sdk/cmdline-tools/bootstrap/bin/sdkmanager "system-images;android-36;google_apis;x86_64"` and then `avdmanager create avd -n phone-sim -k "system-images;android-36;google_apis;x86_64" -d pixel_6` (same directory). After that, set `hw.ramSize=4096M` and `disk.dataPartition.size=6G` in `~/.android/avd/phone-sim.avd/config.ini`.
    - `$V device tv 192.168.2.56:5555` or `$V device phone <ip:port>` for a real device. See Real devices below first.
 3. `$V install tv` (or `phone`) builds a debug APK pointed at this run's server, reinstalls it, and launches it. The app starts unpaired. `$V install tv --signed-in` bakes the run's owner token in instead, for features that aren't about pairing.
+   On the owner's phone, `$V install phone --signed-in --beside` installs it as its own app ("anti-social dev", `org.voltr.antisocial.phone.dev`) and leaves the released app installed and paired. Without `--beside`, install removes the released app.
 4. `$V doctor` must end with `doctor: ready` before you drive.
 
 ## Doctor
@@ -51,5 +52,6 @@ A proof has all three: a screenshot of the action, a screenshot of the resulting
 ## Real devices
 
 - The Fire TV (`192.168.2.56:5555`) and the owner's phone (a OnePlus 12 on Android 16, over wireless debugging: `adb pair`, then `adb connect`) are the owner's real devices, paired with production. A debug install replaces the release build, because the signing keys differ. That signs the device out of production until it's re-paired. Ask the owner before installing on either.
+- Without touching the firewall, tunnel the server over adb instead: `$V adb reverse tcp:38481 tcp:38080`, then `echo http://127.0.0.1:38481 > .verify/current/server_url` before `$V install`. (Port 38080 was taken on the phone itself.) Remove it afterwards with `$V adb reverse --remove-all`.
 - A real device reaches this machine's server at its LAN IP, which `$V device` works out. The firewall has to allow port 38080 from 192.168.2.0/24 (`sudo ufw allow from 192.168.2.0/24 to any port 38080 proto tcp`). Ask the owner to add the rule, and to delete it afterwards.
 - To check against production instead (`https://api.yt.nautilus.voltr.org`), use the device as the owner has it. That spends the owner's real budget, so ask first.

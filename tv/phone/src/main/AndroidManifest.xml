@@ -18,7 +18,7 @@
         android:name=".AntiSocialApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:label="${appLabel}"
         android:supportsRtl="false"
         android:theme="@style/Theme.AntiSocial"
         android:usesCleartextTraffic="${cleartext}">

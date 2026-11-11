@@ -11,6 +11,9 @@ val server = providers.gradleProperty("antiSocialServer")
 // Debug builds can carry a device token so a test device skips pairing: -PantiSocialToken=...
 // Release builds never do, because the APK is published.
 val debugToken = providers.gradleProperty("antiSocialToken").getOrElse("")
+// A debug build can install beside the released app instead of replacing it, as its own app with
+// its own pairing: -PantiSocialIdSuffix=.dev
+val idSuffix = providers.gradleProperty("antiSocialIdSuffix").getOrElse("")
 
 android {
     namespace = "org.voltr.antisocial.phone"
@@ -25,6 +28,7 @@ android {
         versionName = providers.gradleProperty("versionName").getOrElse("dev")
         buildConfigField("String", "SERVER_URL", "\"$server\"")
         manifestPlaceholders["cleartext"] = server.startsWith("http://")
+        manifestPlaceholders["appLabel"] = "@string/app_name"
         buildConfigField("String", "DEBUG_TOKEN", "\"\"")
     }
 
@@ -44,6 +48,10 @@ android {
 
     buildTypes {
         debug {
+            if (idSuffix.isNotEmpty()) {
+                applicationIdSuffix = idSuffix
+                manifestPlaceholders["appLabel"] = "anti-social dev"
+            }
             buildConfigField("String", "DEBUG_TOKEN", "\"$debugToken\"")
         }
         release {

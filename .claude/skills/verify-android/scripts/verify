@@ -85,13 +85,23 @@ device() {
 }
 
 install() {
-  local app=${1:-} mode=${2:-paired}
-  [[ $app = tv || $app = phone ]] || die "usage: verify install <tv|phone> [--signed-in]"
+  local app=${1:-} mode=paired suffix=
+  [[ $app = tv || $app = phone ]] || die "usage: verify install <tv|phone> [--signed-in] [--beside]"
   [ -d "$REPO/tv/$app" ] || die "the $app module doesn't exist yet (tv/$app)"
+  shift
+  for flag in "$@"; do
+    case "$flag" in
+      --signed-in) mode=--signed-in ;;
+      # Its own app (…phone.dev) beside the released one, which stays installed and paired.
+      --beside) [ "$app" = phone ] || die "--beside is for the phone app"; suffix=.dev ;;
+      *) die "usage: verify install <tv|phone> [--signed-in] [--beside]" ;;
+    esac
+  done
   local args=(-PantiSocialServer="$(state server_url)")
   [ "$mode" = --signed-in ] && args+=(-PantiSocialToken="$(state token)")
+  [ -n "$suffix" ] && args+=(-PantiSocialIdSuffix="$suffix")
   (cd "$REPO/tv" && mise exec -- ./gradlew -q ":$app:assembleDebug" "${args[@]}")
-  local pkg=org.voltr.antisocial.$app
+  local pkg=org.voltr.antisocial.$app$suffix
   adbd uninstall "$pkg" >/dev/null 2>&1 || true
   adbd install "$REPO/tv/$app/build/outputs/apk/debug/$app-debug.apk" >/dev/null
   echo "$pkg" >"$(run_dir)/package"
