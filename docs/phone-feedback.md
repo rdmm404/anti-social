@@ -82,7 +82,7 @@ Done, and checked on the phone emulator:
    Zulu (TV too). Half done: dates of videos newer than a month are missing. See `docs/original-titles.md`.
 
 Also checked on the owner's phone, as "anti-social dev" beside the released app, against a throwaway
-server tunnelled over adb: 1, 2, 3, 4 (portrait) and 5. Not yet on the phone: 6, and 4 in full screen.
+server tunnelled over adb: 1 to 6, with 4 both in portrait and in full screen.
 
 Open:
 
