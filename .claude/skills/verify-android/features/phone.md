@@ -16,6 +16,8 @@ What only the phone app does: it opens YouTube links and shared text, shows a vi
 - `phone-settings` the settings link (top right) opens the server's page in a Custom Tab.
 - `phone-share-out` "share" on a video opens the system share sheet with `https://youtu.be/<id>`, without anti-social in it.
 - `phone-nav` search / channels / playlists / history sit in a bottom bar, on every page including the video's; the keyboard hides it.
+- `phone-seek` a double tap on the outer 35% of the video seeks ten seconds and shows "+10s" there; the middle never seeks.
+- `phone-swipe-down` a swipe down on the video leaves it for the mini-player; in full screen it leaves full screen.
 
 ## How to get to it (user POV)
 
@@ -40,3 +42,5 @@ Preconditions: `$V install phone --signed-in`. For the gate checks, no open sess
 - Quote URLs with `?` or `&` twice for `adb shell` (`"'...'"`), or the device shell cuts them.
 - A YouTube playlist ID that's private or a mix fails the import with a message; use a public creator playlist.
 - The settings tab uses Chrome's own session, separate from the app's token: it may ask to sign in.
+- The first time the emulator goes full screen, Android covers it with a "Viewing full screen" hint that swallows touches: tap `Got it` first.
+- A double tap is `adb shell "input tap X Y & sleep 0.12; input tap X Y"`. The "+10s" is gone within 700 ms, so `screencap` straight after rather than `$V shot`.

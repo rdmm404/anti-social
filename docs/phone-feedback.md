@@ -64,3 +64,28 @@ once upright.
 
 - The server's approval page says "Check the code matches the one on the device's screen", but the phone
   shows no code. Reword it? (Server change: ask first.)
+
+## Second round, from a day on 0.1.0 (2026-11-10)
+
+Done, and checked on the phone emulator:
+
+1. **Seeking shows what it did.** A double tap, or the ±10s buttons, shows "+10s" on the side it went;
+   further taps there keep seeking and add up ("+20s").
+2. **The middle of the video doesn't seek.** Only the outer 35% on each side does.
+3. **The phone's navigation bar sits on the bottom bar's colour**, not the page's.
+4. **Swipe down on the video leaves it** (it carries on in the mini-player). In full screen, a swipe down
+   leaves full screen.
+5. **The video page's actions are one row** (subscribe, + playlist, share), with the channel above them on
+   the title's left edge.
+6. **Speed and quality options wrap** onto more lines instead of running off the side.
+7. **Lists show the titles their uploaders wrote**, not YouTube's translations: lists are asked for in
+   Zulu (TV too). Half done: dates of videos newer than a month are missing. See `docs/original-titles.md`.
+
+Also checked on the owner's phone, as "anti-social dev" beside the released app, against a throwaway
+server tunnelled over adb: 1, 2, 3, 4 (portrait) and 5. Not yet on the phone: 6, and 4 in full screen.
+
+Open:
+
+- **The settings page asked to sign in every time.** Likely cause: the cookie was `SameSite=Strict`, and
+  Chrome doesn't send those on a page another app opens. Now `Lax`; needs a deploy, and checking after it.
+- **Settings in the app.** Decided: no app settings for now; the server's page stays the one place.

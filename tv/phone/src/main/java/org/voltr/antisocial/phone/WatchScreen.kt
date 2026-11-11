@@ -9,11 +9,15 @@ import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -52,7 +57,10 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withLink
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -85,6 +93,15 @@ private const val SEEK_STEP_MS = 10_000L
 private const val CONTROLS_HIDE_MS = 3_000L
 private const val DOUBLE_TAP_MS = 300L
 
+/** How long the seek's "+10s" stays up, and how long a further tap on that side keeps seeking. */
+private const val SEEK_FLASH_MS = 700L
+
+/** The share of the video's width, on each side, where a double tap seeks. The middle doesn't. */
+private const val SEEK_ZONE = 0.35f
+
+/** How far down a swipe has to pull the video to leave it. */
+private val SWIPE_AWAY = 72.dp
+
 private fun speedText(speed: Float) = "${speed.toString().removeSuffix(".0")}x"
 
 /** A choice the overlay is offering, in place of its controls. */
@@ -112,8 +129,16 @@ fun WatchScreen(
     }
     val state by watching.state.collectAsState()
     if (fullScreen) {
+        val activity = LocalContext.current as MainActivity
+        var pull by remember { mutableFloatStateOf(0f) }
         Box(Modifier.fillMaxSize().background(Color.Black)) {
-            Player(services, watching, state, navigator, route, fullScreen = true, Modifier.fillMaxSize())
+            Player(
+                services, watching, state, navigator, route, fullScreen = true,
+                Modifier.fillMaxSize().offset { IntOffset(0, pull.roundToInt()) },
+                onPull = { pull = it },
+                // As on YouTube: a swipe down in full screen leaves full screen, not the video.
+                onSwipeDown = { activity.requestFullScreen(false) },
+            )
         }
     } else {
         VideoPage(services, entry, route, navigator, watching, state)
@@ -159,7 +184,7 @@ private fun OpeningPage(services: Services, route: Route.Watch, navigator: Navig
             val channel = preview?.channel?.takeIf { it.isNotEmpty() }
             if (channel != null) {
                 Box(Modifier.height(Touch), contentAlignment = Alignment.CenterStart) {
-                    Label(channel, Type.link, Modifier.padding(horizontal = Unit5 * 2), maxLines = 1)
+                    Label(channel, Type.link, maxLines = 1)
                 }
             } else {
                 Bone(0.5f, Touch)
@@ -206,12 +231,34 @@ private fun Player(
     route: Route.Watch,
     fullScreen: Boolean,
     modifier: Modifier,
+    onPull: (Float) -> Unit,
+    onSwipeDown: () -> Unit,
 ) {
     val activity = LocalContext.current as MainActivity
     var controls by remember { mutableStateOf(true) }
     var picker by remember { mutableStateOf<Picker?>(null) }
     var touched by remember { mutableIntStateOf(0) }
     var lastTap by remember { mutableLongStateOf(0L) }
+    // Which side the last tap landed on: -1 left, 1 right, 0 the middle, where nothing seeks.
+    var lastSide by remember { mutableIntStateOf(0) }
+    var controlsBeforeTap by remember { mutableStateOf(true) }
+    // The seconds sought so far by taps in a row, signed, shown on the side they went.
+    var sought by remember { mutableIntStateOf(0) }
+    var lastSeek by remember { mutableLongStateOf(0L) }
+    val seek: (Int) -> Unit = { side ->
+        watching.seekBy(side * SEEK_STEP_MS)
+        val step = side * (SEEK_STEP_MS / 1000).toInt()
+        sought = if (sought * side > 0) sought + step else step
+        lastSeek = SystemClock.uptimeMillis()
+        touched++
+    }
+    LaunchedEffect(lastSeek) {
+        if (sought == 0) return@LaunchedEffect
+        delay(SEEK_FLASH_MS)
+        sought = 0
+    }
+    val swipeAway = with(LocalDensity.current) { SWIPE_AWAY.toPx() }
+    var pulled by remember { mutableFloatStateOf(0f) }
     // Pausing brings the controls up once; a tap can still put them away.
     LaunchedEffect(state.playing) { if (!state.playing) controls = true }
     LaunchedEffect(touched, state.playing, controls, picker) {
@@ -219,7 +266,27 @@ private fun Player(
         delay(CONTROLS_HIDE_MS)
         controls = false
     }
-    Box(modifier.background(Color.Black)) {
+    Box(
+        modifier.background(Color.Black).pointerInput(swipeAway) {
+            // A swipe down leaves the video. It follows the finger, and lets go if it didn't go far.
+            detectVerticalDragGestures(
+                onDragStart = { pulled = 0f },
+                onDragEnd = {
+                    if (pulled > swipeAway) onSwipeDown()
+                    pulled = 0f
+                    onPull(0f)
+                },
+                onDragCancel = {
+                    pulled = 0f
+                    onPull(0f)
+                },
+                onVerticalDrag = { _, amount ->
+                    pulled = (pulled + amount).coerceAtLeast(0f)
+                    onPull(pulled)
+                },
+            )
+        },
+    ) {
         VideoSurface(watching, Modifier.fillMaxSize())
         val hold = state.held
         val blocking = state.ending != Ending.None || (hold != null && hold != Verdict.SignedOut)
@@ -237,17 +304,30 @@ private fun Player(
         } else {
             Box(
                 Modifier.fillMaxSize().pointerInput(Unit) {
-                    // The first tap answers at once. A second one soon after is a double tap,
-                    // which seeks by ten seconds on the side it lands.
+                    // The first tap answers at once. A second one soon after on the same side is
+                    // a double tap, which seeks by ten seconds that way, and each further tap
+                    // there seeks again. The middle of the video never seeks.
                     detectTapGestures { offset ->
                         val now = SystemClock.uptimeMillis()
-                        if (now - lastTap < DOUBLE_TAP_MS) {
-                            watching.seekBy(if (offset.x < size.width / 2) -SEEK_STEP_MS else SEEK_STEP_MS)
-                            controls = true
+                        val side = when {
+                            offset.x < size.width * SEEK_ZONE -> -1
+                            offset.x > size.width * (1 - SEEK_ZONE) -> 1
+                            else -> 0
+                        }
+                        val doubleTap = side == lastSide && now - lastTap < DOUBLE_TAP_MS
+                        val another = sought * side > 0 && now - lastSeek < SEEK_FLASH_MS
+                        if (side != 0 && another) {
+                            seek(side)
+                        } else if (side != 0 && doubleTap) {
+                            // The first tap was half of this, so what it did to the controls is undone.
+                            controls = controlsBeforeTap
                             lastTap = 0L
+                            seek(side)
                         } else {
+                            controlsBeforeTap = controls
                             if (picker != null) picker = null else controls = !controls
                             lastTap = now
+                            lastSide = side
                         }
                         touched++
                     }
@@ -263,8 +343,23 @@ private fun Player(
                 Controls(
                     services, watching, state, fullScreen,
                     onTouch = { touched++ },
+                    onSeek = seek,
                     onPick = { picker = it },
                     onFullScreen = { activity.requestFullScreen(!fullScreen) },
+                )
+            }
+            if (sought != 0 && open == null) {
+                val edges = if (fullScreen) Modifier.safeDrawingPadding() else Modifier
+                Label(
+                    if (sought > 0) "+${sought}s" else "−${-sought}s",
+                    Type.strong,
+                    Modifier
+                        .align(if (sought > 0) Alignment.CenterEnd else Alignment.CenterStart)
+                        .then(edges)
+                        .padding(horizontal = Unit5 * 4)
+                        .background(Palette.scrim, Corner)
+                        .padding(horizontal = Unit5 * 3, vertical = Unit5 * 2),
+                    maxLines = 1,
                 )
             }
         }
@@ -287,6 +382,7 @@ private fun BoxScope.Controls(
     state: WatchingState,
     fullScreen: Boolean,
     onTouch: () -> Unit,
+    onSeek: (Int) -> Unit,
     onPick: (Picker) -> Unit,
     onFullScreen: () -> Unit,
 ) {
@@ -306,9 +402,9 @@ private fun BoxScope.Controls(
         horizontalArrangement = Arrangement.spacedBy(Unit5 * 4),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        LinkButton("-10s", { watching.seekBy(-SEEK_STEP_MS); onTouch() }, style = Type.strong)
+        LinkButton("-10s", { onSeek(-1) }, style = Type.strong)
         ActionButton(if (state.playing) "pause" else "play", { watching.toggle(); onTouch() }, primary = true)
-        LinkButton("+10s", { watching.seekBy(SEEK_STEP_MS); onTouch() }, style = Type.strong)
+        LinkButton("+10s", { onSeek(1) }, style = Type.strong)
     }
     Column(
         Modifier
@@ -327,19 +423,21 @@ private fun BoxScope.Controls(
     }
 }
 
-/** Speed or quality, every option at once. Tapping beside them keeps what was there. */
+/** Speed or quality, every option at once, on as many lines as they need. Tapping beside them keeps what was there. */
+@kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BoxScope.Choices(picker: Picker, watching: Watching, state: WatchingState, onDone: () -> Unit) {
     Box(Modifier.matchParentSize().background(Palette.scrim))
     Column(
-        Modifier.align(Alignment.Center).fillMaxWidth(),
+        Modifier.align(Alignment.Center).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = Unit5 * 2),
         verticalArrangement = Arrangement.spacedBy(Unit5 * 2),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Label(if (picker == Picker.Speed) "Speed" else "Quality", Type.strong)
-        Row(
-            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = Unit5 * 3),
-            horizontalArrangement = Arrangement.spacedBy(Unit5 * 2),
+        FlowRow(
+            Modifier.padding(horizontal = Unit5 * 3),
+            horizontalArrangement = Arrangement.spacedBy(Unit5 * 2, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(Unit5 * 2),
         ) {
             when (picker) {
                 Picker.Speed -> SPEEDS.forEach { speed ->
@@ -448,6 +546,7 @@ private fun shareVideo(context: Context, id: String, title: String) {
 }
 
 /** Portrait: the video on top, the page below it. */
+@kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun VideoPage(
     services: Services,
@@ -479,8 +578,15 @@ private fun VideoPage(
         subscribed = runCatching { services.api.subscriptions().any { it.channelId == channelId } }.getOrNull()
     }
 
-    Column(Modifier.fillMaxSize()) {
-        Player(services, watching, state, navigator, route, fullScreen = false, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+    var pull by remember { mutableFloatStateOf(0f) }
+    Column(Modifier.fillMaxSize().offset { IntOffset(0, pull.roundToInt()) }) {
+        Player(
+            services, watching, state, navigator, route, fullScreen = false,
+            Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+            onPull = { pull = it },
+            // The video carries on in the mini-player.
+            onSwipeDown = navigator::back,
+        )
         LazyColumn(
             state = entry.list,
             contentPadding = PaddingValues(start = Unit5 * 3, end = Unit5 * 3, top = Unit5 * 2, bottom = Unit5 * 8),
@@ -495,21 +601,27 @@ private fun VideoPage(
                     videoMeta(video.views, video.uploaded, video.likes).takeIf { it.isNotEmpty() }?.let { Label(it, Type.muted) }
                 }
             }
+            // The channel on the title's left edge, then everything there is to do, in one row.
             item {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Unit5 * 2)) {
-                    val channelId = video.channelId
+                val channelId = video.channelId
+                Column {
                     if (channelId != null) {
-                        LinkButton(video.channel.ifEmpty { "Channel" }, { navigator.open(Route.Channel(channelId)) }, Modifier.weight(1f))
-                        subscribed?.let { SubscribeButton(services, channelId, video.channel, it) }
+                        Tappable({ navigator.open(Route.Channel(channelId)) }, Modifier.heightIn(min = Touch)) {
+                            Label(video.channel.ifEmpty { "Channel" }, Type.link, maxLines = 1)
+                        }
                     } else {
-                        Label(video.channel, Type.muted, Modifier.weight(1f))
+                        Box(Modifier.heightIn(min = Touch), contentAlignment = Alignment.CenterStart) {
+                            Label(video.channel, Type.muted, maxLines = 1)
+                        }
                     }
-                }
-            }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(Unit5 * 2), verticalAlignment = Alignment.CenterVertically) {
-                    ActionButton("+ playlist", { adding = !adding })
-                    ActionButton("share", { shareVideo(context, video.id, video.title) })
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(Unit5 * 2),
+                        verticalArrangement = Arrangement.spacedBy(Unit5 * 2),
+                    ) {
+                        if (channelId != null) subscribed?.let { SubscribeButton(services, channelId, video.channel, it) }
+                        ActionButton("+ playlist", { adding = !adding })
+                        ActionButton("share", { shareVideo(context, video.id, video.title) })
+                    }
                 }
             }
             if (adding) {

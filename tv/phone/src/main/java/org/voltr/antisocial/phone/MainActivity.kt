@@ -26,7 +26,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
@@ -323,7 +328,9 @@ private fun App(
 
     // The keyboard covers the bottom bar, as it would on YouTube, rather than pushing it up.
     val typing = WindowInsets.isImeVisible
-    Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+    // The bottom bar reaches the screen's edge, so the phone's own navigation sits on its colour.
+    val edges = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
+    Column(Modifier.fillMaxSize().windowInsetsPadding(edges).then(if (typing) Modifier.imePadding() else Modifier)) {
         if (!onWatch) TopBar(services, navigator)
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (route is Route.Watch) {
@@ -386,7 +393,7 @@ private fun BottomNav(current: Route, navigator: Navigator) {
     }
     Column(Modifier.fillMaxWidth().background(Palette.surface)) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.raised))
-        Row(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().navigationBarsPadding()) {
             listOf(
                 Route.Search to "search",
                 Route.Channels to "channels",
