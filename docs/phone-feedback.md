@@ -9,12 +9,15 @@ From the first session on the owner's OnePlus 12 (debug build against a test ser
 - 3 minutes with the screen locked and the phone dozing: playback continued, 11 check-ins (one per 15 s).
 - Picture-in-picture on Home: plays, check-ins continue; closing the window pauses.
 
-## Still to test with the owner
+## Tested with the owner on 0.1.0
 
-- A refused check-in on the phone (screen locked, and in picture-in-picture).
-- Tapping a YouTube link in another app. Android 12+ doesn't hand youtube.com links to an unverified app by
-  default, so the owner may need App info → Open by default → add links. See how OxygenOS shows this.
-- Sharing from the YouTube app to anti-social.
+- A refused check-in: daily minutes capped below today's use on production (one `settings` row, removed
+  after). The next check-in was refused, playback paused, the app showed "No time left today", and
+  check-ins kept asking every 15 s while held. The player's one-line message said "Waiting for a session"
+  for an out-of-time refusal; fixed after 0.1.0.
+- Tapping a YouTube link in another app works, once App info → Open by default → links are added by hand
+  (Android 12+ doesn't hand youtube.com to an unverified app).
+- Sharing from the YouTube app to anti-social works.
 - The owner's YouTube blocker app must allow anti-social (youtube.com, youtubei.googleapis.com,
   *.googlevideo.com, i.ytimg.com), ideally per app.
 

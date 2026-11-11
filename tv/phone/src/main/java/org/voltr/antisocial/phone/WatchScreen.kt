@@ -274,6 +274,7 @@ private fun Player(
 private fun holdLine(state: WatchingState): String = when {
     state.ending == Ending.Finished -> "That was the video."
     state.ending == Ending.Failed -> "Playback failed."
+    (state.held as? Verdict.Refused)?.outOfTime == true -> "No time left today"
     state.held is Verdict.Refused -> "Waiting for a session"
     state.held is Verdict.Unreachable -> "Can't reach the anti-social server"
     else -> "Checking in…"
