@@ -20,6 +20,19 @@ class ParsingTest {
     }
 
     @Test
+    fun `dates read as youtube words them`() {
+        val now = java.time.Instant.parse("2026-11-10T12:00:00Z")
+        fun ago(days: Long, hours: Long = 0) = agoText(now.minus(java.time.Duration.ofHours(days * 24 + hours)), now)
+        assertEquals("6 hours ago", ago(0, 6))
+        assertEquals("1 day ago", ago(1))
+        assertEquals("3 weeks ago", ago(21))
+        assertEquals("1 month ago", ago(30))
+        assertEquals("11 months ago", ago(334))
+        assertEquals("1 year ago", ago(365))
+        assertEquals("4 years ago", ago(1461))
+    }
+
+    @Test
     fun `hdr is 10-bit av1 or vp9 profile 2`() {
         assertTrue(isHdr("av01.0.13M.10.0.110.09.16.09.0"))
         assertFalse(isHdr("av01.0.13M.08"))
@@ -50,6 +63,19 @@ class LiveTest {
         println(page.name + " " + page.videos.take(2))
         assertTrue(page.videos.isNotEmpty())
         assertEquals("@3blue1brown", youtube.channel("@3blue1brown").id)
+    }
+
+    @Test
+    fun `lists keep the titles their uploaders wrote`() = runBlocking {
+        live()
+        // Charly Sinewan writes in Spanish and has English translations of his titles.
+        val videos = youtube.channel("UCqZQXbQTF6VI_i5QWFaVxSQ").videos
+        videos.take(8).forEach { println("${it.title} | ${it.views} | ${it.uploaded} | ${it.duration}") }
+        assertTrue(videos.size > 5)
+        assertTrue(videos.all { it.views != null && it.uploaded?.endsWith(" ago") == true && it.duration != null })
+        val found = youtube.search("charly sinewan venezuela")
+        found.take(8).forEach { println("${it.title} | ${it.channel} | ${it.views} | ${it.uploaded}") }
+        assertTrue(found.count { it.views != null && it.uploaded != null } > found.size / 2)
     }
 
     @Test

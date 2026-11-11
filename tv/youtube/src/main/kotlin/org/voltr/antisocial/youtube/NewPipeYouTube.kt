@@ -43,14 +43,25 @@ import org.voltr.antisocial.core.YouTubePlaylist
 import org.voltr.antisocial.core.chooseVideoTracks
 import org.voltr.antisocial.core.cleanTitle
 import java.io.IOException
+import java.time.Duration
+import java.time.Instant
 import java.time.ZoneId
 import java.util.Locale
+import kotlin.math.roundToLong
 
 private val VIDEO_ID = Regex("^[\\w-]{11}$")
 private val CHANNEL_ID = Regex("^(UC[\\w-]{20,}|@[\\w.-]+)$")
 private val PLAYLIST_ID = Regex("^[\\w-]{10,}$")
 private const val SEARCH_RESULTS = 20
 private const val COMMENT_LIMIT = 50
+
+/**
+ * The language lists are asked for. YouTube swaps a title for its translation into the language
+ * of the request, and has no way to ask for the original, so lists are asked for in Zulu, which
+ * next to nobody translates into (PipePipe's trick). The video page needs none of this: its
+ * title is always the original. Dates come back in Zulu too, so they're written out again here.
+ */
+private val ORIGINAL_TITLES = Localization("zu")
 
 /**
  * YouTube through NewPipeExtractor, which tracks YouTube's changes the way yt-dlp does.
@@ -70,16 +81,28 @@ class NewPipeYouTube(
             listOf(YoutubeSearchQueryHandlerFactory.VIDEOS),
             "",
         )
-        SearchInfo.getInfo(ServiceList.YouTube, handler).relatedItems.toVideos().take(SEARCH_RESULTS)
+        val extractor = ServiceList.YouTube.getSearchExtractor(handler).apply {
+            forceLocalization(ORIGINAL_TITLES)
+            fetchPage()
+        }
+        SearchInfo.getInfo(extractor).relatedItems.toVideos().take(SEARCH_RESULTS)
     }
 
     override suspend fun channel(id: String): ChannelPage = extract {
         if (!CHANNEL_ID.matches(id)) throw YouTubeError("Not a channel id.")
         val url = if (id.startsWith("@")) "https://www.youtube.com/$id" else "https://www.youtube.com/channel/$id"
-        val info = ChannelInfo.getInfo(ServiceList.YouTube, url)
+        // The channel's first answer already holds its videos tab, so it's the one to ask in Zulu.
+        val info = ChannelInfo.getInfo(ServiceList.YouTube.getChannelExtractor(url).apply {
+            forceLocalization(ORIGINAL_TITLES)
+            fetchPage()
+        })
         val videosTab = info.tabs.firstOrNull { ChannelTabs.VIDEOS in it.contentFilters }
             ?: return@extract ChannelPage(id, info.name, emptyList())
-        val tab = ChannelTabInfo.getInfo(ServiceList.YouTube, videosTab)
+        val extractor = ServiceList.YouTube.getChannelTabExtractor(videosTab).apply {
+            forceLocalization(ORIGINAL_TITLES)
+            fetchPage()
+        }
+        val tab = ChannelTabInfo.getInfo(extractor)
         ChannelPage(id, info.name, tab.relatedItems.toVideos(fallbackChannel = info.name, fallbackChannelId = channelIdOf(info.url)))
     }
 
@@ -131,11 +154,15 @@ class NewPipeYouTube(
     override suspend fun playlist(id: String, limit: Int): YouTubePlaylist = extract {
         if (!PLAYLIST_ID.matches(id)) throw YouTubeError("Not a playlist id.")
         val url = "https://www.youtube.com/playlist?list=$id"
-        val info = PlaylistInfo.getInfo(ServiceList.YouTube, url)
+        val extractor = ServiceList.YouTube.getPlaylistExtractor(url).apply {
+            forceLocalization(ORIGINAL_TITLES)
+            fetchPage()
+        }
+        val info = PlaylistInfo.getInfo(extractor)
         val items = info.relatedItems.toMutableList()
         var page = info.nextPage
         while (page != null && items.size < limit) {
-            val more = PlaylistInfo.getMoreItems(ServiceList.YouTube, url, page)
+            val more = extractor.getPage(page)
             items += more.items
             page = if (more.hasNextPage()) more.nextPage else null
         }
@@ -211,7 +238,7 @@ internal fun List<InfoItem>.toVideos(
                 channelId = channelIdOf(item.uploaderUrl) ?: fallbackChannelId,
                 duration = item.duration.takeIf { it > 0 }?.toInt(),
                 views = item.viewCount.takeIf { it >= 0 },
-                uploaded = item.textualUploadDate?.takeIf { it.isNotBlank() },
+                uploaded = item.uploadDate?.let { runCatching { agoText(it.instant) }.getOrNull() },
             )
         }
 
@@ -219,6 +246,25 @@ internal fun List<InfoItem>.toVideos(
 internal fun videoIdOf(url: String): String? {
     val id = if (url.contains("/shorts/")) url.substringAfter("/shorts/") else url.substringAfter("v=", "")
     return id.take(11).takeIf { VIDEO_ID.matches(it) }
+}
+
+/**
+ * "3 weeks ago", from the moment YouTube's own "3 weeks ago" was read as. That moment is only
+ * as exact as YouTube's words were, so this rounds the same way they did.
+ */
+internal fun agoText(then: Instant, now: Instant = Instant.now()): String {
+    val minutes = Duration.between(then, now).toMinutes().coerceAtLeast(0)
+    val days = minutes / (60 * 24)
+    val (count, unit) = when {
+        minutes < 1 -> return "just now"
+        minutes < 60 -> minutes to "minute"
+        days < 1 -> minutes / 60 to "hour"
+        days < 7 -> days to "day"
+        days < 28 -> days / 7 to "week"
+        days < 350 -> (days / 30.4).roundToLong().coerceAtLeast(1) to "month"
+        else -> (days / 365.0).roundToLong().coerceAtLeast(1) to "year"
+    }
+    return "$count $unit${if (count == 1L) "" else "s"} ago"
 }
 
 private fun isoDate(date: DateWrapper): String? =
