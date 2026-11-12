@@ -370,7 +370,7 @@ fun VideoList(
     ) {
         header()
         if (videos.isEmpty()) item { Label(empty, Type.muted, Modifier.padding(top = Unit5 * 2)) }
-        items(videos, key = { it.id }) { video ->
+        items(videos) { video ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Tappable({ navigator.open(Route.Watch(video.id, listId, preview = video)) }, Modifier.weight(1f)) {
                     VideoRow(video)

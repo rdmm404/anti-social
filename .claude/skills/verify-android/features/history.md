@@ -1,6 +1,6 @@
 # History
 
-The History tab lists what was watched in the current budget day. It stays readable when no session is open, so you can see what you've used.
+The History tab lists what was watched, newest first, once per budget day a video was watched on (so a video can repeat). It stays readable when no session is open, so you can see what you've used.
 
 ## Sub-features
 
@@ -11,7 +11,7 @@ The History tab lists what was watched in the current budget day. It stays reada
 ## How to get to it (user POV)
 
 - TV: the history tab, the fourth tab.
-- Phone: the same, by touch. _Not built yet._
+- Phone: the history tab in the bottom bar.
 
 ## Driving it with scripts/verify
 
@@ -24,5 +24,6 @@ Preconditions:
 
 ## Gotchas
 
+- A repeated video once crashed both apps (rows keyed by video id). To check it without waiting a day, copy a `watched` row to the day before with `$V sql`, then open the tab.
 - History is per budget day, which starts at 4:00 local time (`ANTI_SOCIAL_DAY_START`). A run spanning 4:00 sees an empty list afterwards.
 - Titles are de-shouted on screen, so match a case-sensitive prefix that survives that, or use a regex.

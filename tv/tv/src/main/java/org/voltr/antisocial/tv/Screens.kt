@@ -323,7 +323,7 @@ private fun VideoGrid(
         verticalArrangement = Arrangement.spacedBy(Unit5 * 2),
         modifier = Modifier.fillMaxSize(),
     ) {
-        itemsIndexed(videos, key = { _, video -> video.id }) { index, video ->
+        itemsIndexed(videos) { index, video ->
             Focusable(
                 { open(Route.Watch(video.id, listId)) },
                 Modifier
