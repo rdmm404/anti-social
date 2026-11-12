@@ -79,7 +79,7 @@ Done, and checked on the phone emulator:
    the title's left edge.
 6. **Speed and quality options wrap** onto more lines instead of running off the side.
 7. **Lists show the titles their uploaders wrote**, not YouTube's translations: lists are asked for in
-   Zulu (TV too). Half done: dates of videos newer than a month are missing. See `docs/original-titles.md`.
+   Zulu (TV too). Dates of videos newer than a month followed in 0.1.2. See `docs/original-titles.md`.
 
 Also checked on the owner's phone, as "anti-social dev" beside the released app, against a throwaway
 server tunnelled over adb: 1 to 6, with 4 both in portrait and in full screen.
@@ -87,5 +87,20 @@ server tunnelled over adb: 1 to 6, with 4 both in portrait and in full screen.
 Open:
 
 - **The settings page asked to sign in every time.** Likely cause: the cookie was `SameSite=Strict`, and
-  Chrome doesn't send those on a page another app opens. Now `Lax`; needs a deploy, and checking after it.
+  Chrome doesn't send those on a page another app opens. Now `Lax`, deployed 2026-11-11; still to check on the phone.
 - **Settings in the app.** Decided: no app settings for now; the server's page stays the one place.
+
+## Release 0.1.2 (2026-11-11)
+
+- The history page crashed when a video had been watched on two days (rows keyed by video id). Fixed in
+  the phone and the TV; the owner checked history on the phone. Recent Zulu dates are read too.
+- The server was redeployed with the `SameSite=Lax` cookie. Not yet checked that the settings page stays
+  signed in when reopened from the app.
+- TV 0.3.1 carries both fixes; built, not installed yet (the TV wasn't reachable over adb).
+
+To do, deferred by the owner:
+
+- **History stops at 50 videos.** The server sends one page of 50 (`historyPage`) and takes `offset`, but
+  the app never asks for the next page.
+- **History can't be searched or narrowed to a day.** The server takes `q`, `start` and `end`; the app
+  sends none of them.
