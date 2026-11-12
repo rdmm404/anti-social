@@ -238,7 +238,8 @@ internal fun List<InfoItem>.toVideos(
                 channelId = channelIdOf(item.uploaderUrl) ?: fallbackChannelId,
                 duration = item.duration.takeIf { it > 0 }?.toInt(),
                 views = item.viewCount.takeIf { it >= 0 },
-                uploaded = item.uploadDate?.let { runCatching { agoText(it.instant) }.getOrNull() },
+                uploaded = item.uploadDate?.let { runCatching { agoText(it.instant) }.getOrNull() }
+                    ?: item.textualUploadDate?.let(::zuluAgoText),
             )
         }
 
@@ -264,6 +265,32 @@ internal fun agoText(then: Instant, now: Instant = Instant.now()): String {
         days < 350 -> (days / 30.4).roundToLong().coerceAtLeast(1) to "month"
         else -> (days / 365.0).roundToLong().coerceAtLeast(1) to "year"
     }
+    return "$count $unit${if (count == 1L) "" else "s"} ago"
+}
+
+/** The Zulu words for each unit of time: the forms YouTube was seen to use, and PipePipe's list of them. */
+private val ZULU_UNITS = mapOf(
+    "second" to setOf("amasekhondi", "isekhondi", "emasekhondini", "umzuzwana", "imizuzwana", "emizuzwaneni"),
+    "minute" to setOf("amaminithi", "iminithi", "emaminithini", "umzuzu", "imizuzu", "emizuzwini"),
+    "hour" to setOf("amahora", "ihora", "emahoreni"),
+    "day" to setOf("izinsuku", "usuku", "osukwini", "ezinsukwini"),
+    "week" to setOf("amaviki", "iviki", "emavikini", "isonto", "amasonto", "emasontweni"),
+    "month" to setOf("inyanga", "izinyanga", "ezinyangeni"),
+    "year" to setOf("iminyaka", "unyaka", "eminyakeni"),
+)
+private val ZULU_WORD = Regex("""\p{L}+""")
+private val NUMBER = Regex("""\d+""")
+
+/**
+ * "2 days ago" from YouTube's Zulu "ezinsukwini ezingu-2 ezedlule." NewPipeExtractor knows only
+ * some of the Zulu forms, and leaves the date of anything worded another way empty. Null when
+ * the words aren't a count of a known unit.
+ */
+internal fun zuluAgoText(words: String): String? {
+    val count = NUMBER.find(words)?.value?.toLongOrNull() ?: return null
+    val unit = ZULU_WORD.findAll(words.lowercase())
+        .firstNotNullOfOrNull { word -> ZULU_UNITS.entries.firstOrNull { word.value in it.value }?.key }
+        ?: return null
     return "$count $unit${if (count == 1L) "" else "s"} ago"
 }
 

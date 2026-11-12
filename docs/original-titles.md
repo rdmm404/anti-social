@@ -1,6 +1,6 @@
 # Original titles in lists (the Zulu strategy)
 
-Researched and half built on 2026-11-10. Status: titles work; dates of videos newer than a month don't yet.
+Researched and half built on 2026-11-10. Status: titles and dates work (dates since 2026-11-11).
 
 ## The problem
 
@@ -52,13 +52,17 @@ list alone can't tell. The video page would show the original, and oEmbed could 
 
 ## What's left
 
-- **Dates newer than a month are missing.** YouTube writes "ezinsukwini ezingu-2 ezedlule." (2 days ago),
-  and NewPipe's Zulu patterns (`izinsuku`, `usuku`, `amaviki`, …) don't match that form, so `uploadDate` is
-  null. Months and years parse ("1 inyanga edlule", "8 iminyaka edlule"). Hours, days and weeks need their
-  real Zulu forms collected and parsed here. `LiveTest > lists keep the titles their uploaders wrote`
-  (`./gradlew :youtube:test -Plive`) fails on this until it's done.
+- **Dates newer than a month** were missing and are read here now (2026-11-11). NewPipe's Zulu patterns
+  don't match "ezinsukwini ezingu-2 ezedlule." (2 days ago), so `uploadDate` is null; `zuluAgoText` then
+  reads `textualUploadDate` with PipePipe's word list. Seen live and unparsed by NewPipe: `emahoreni`
+  (hours), `osukwini` and `ezinsukwini` (days). Minutes, seconds and one week weren't seen live; their
+  words come from PipePipe's list only. "izolo" (yesterday) and "manje" (now) are not read.
+- **A members-only video has no view count** and can't be played, but is still listed (seen at the top of
+  the channel list, `-9Yi9Ab4k3k`). NewPipeExtractor v0.27.0 doesn't say which items are members-only.
+  Open: hide them from lists. It needs another way to tell (a newer extractor, the list's own badge, or the
+  missing view count next to a duration), none looked into. Not asked for yet.
 - **Words NewPipe only knows in English**: "no views", "Streamed … ago", premieres. A video with a null
-  view count was seen at the top of the channel list; not looked into.
+  view count at the top of the channel list turned out to be members-only (above).
 - The channel's name is asked for in Zulu too. Not checked whether a name is ever translated.
 
 ## Sources

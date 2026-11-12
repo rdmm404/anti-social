@@ -33,6 +33,16 @@ class ParsingTest {
     }
 
     @Test
+    fun `zulu dates newpipe leaves empty are read here`() {
+        assertEquals("2 days ago", zuluAgoText("ezinsukwini ezingu-2 ezedlule."))
+        assertEquals("1 day ago", zuluAgoText("osukwini olungu-1 olwedlule"))
+        assertEquals("4 hours ago", zuluAgoText("Kusakazwe emahoreni angu-4 edlule"))
+        assertEquals("2 weeks ago", zuluAgoText("amaviki angu-2 edlule"))
+        assertNull(zuluAgoText("izolo"))
+        assertNull(zuluAgoText("3 into engaziwa"))
+    }
+
+    @Test
     fun `hdr is 10-bit av1 or vp9 profile 2`() {
         assertTrue(isHdr("av01.0.13M.10.0.110.09.16.09.0"))
         assertFalse(isHdr("av01.0.13M.08"))
@@ -72,7 +82,9 @@ class LiveTest {
         val videos = youtube.channel("UCqZQXbQTF6VI_i5QWFaVxSQ").videos
         videos.take(8).forEach { println("${it.title} | ${it.views} | ${it.uploaded} | ${it.duration}") }
         assertTrue(videos.size > 5)
-        assertTrue(videos.all { it.views != null && it.uploaded?.endsWith(" ago") == true && it.duration != null })
+        assertTrue(videos.all { it.uploaded?.endsWith(" ago") == true && it.duration != null })
+        // A members-only video has no view count.
+        assertTrue(videos.count { it.views != null } > videos.size / 2)
         val found = youtube.search("charly sinewan venezuela")
         found.take(8).forEach { println("${it.title} | ${it.channel} | ${it.views} | ${it.uploaded}") }
         assertTrue(found.count { it.views != null && it.uploaded != null } > found.size / 2)
